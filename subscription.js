@@ -73,12 +73,12 @@ class Subscription {
 
     // Start polling
     this.pollInterval = setInterval(() => {
-      this.poll().catch((error) => {
+      this.poll().catch((e) => {
         if (this.config.logErrors) {
-          console.error('Event polling error:', error);
+          console.error('Event polling error:', e);
         }
         if (this.config.errorHandler) {
-          this.config.errorHandler(error);
+          this.config.errorHandler(e);
         }
       });
     }, this.config.pollInterval);
@@ -149,9 +149,9 @@ class Subscription {
         }
       }
       this.lastState.initialized = true;
-    } catch (error) {
+    } catch (e) {
       if (this.config.logErrors) {
-        console.error('Failed to initialize state:', error);
+        console.error('Failed to initialize state:', e);
       }
     }
   }
@@ -176,7 +176,7 @@ class Subscription {
       for (const event of events) {
         this.processEvent(event);
       }
-    } catch (error) {
+    } catch (e) {
       if (this.config.retryOnError) {
         setTimeout(() => {
           if (this.running) {
@@ -184,7 +184,7 @@ class Subscription {
           }
         }, this.config.retryInterval);
       }
-      throw error;
+      throw e;
     }
   }
 

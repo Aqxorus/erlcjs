@@ -63,8 +63,8 @@ class RequestQueue {
 
         const result = await request.execute();
         request.resolve(result);
-      } catch (error) {
-        request.reject(error);
+      } catch (e) {
+        request.reject(e);
       }
 
       // Wait before processing next request

@@ -215,49 +215,145 @@ class ERLCClient {
    * @returns {Promise<Response>} Fetch response
    */
   async makeRequest(method, path, data = null) {
+    return this.makeRequestWithRetry(method, path, data, 3);
+  }
+
+  /**
+   * Make an HTTP request with retry logic for transient network errors
+   * @param {string} method - HTTP method
+   * @param {string} path - API endpoint path
+   * @param {Object} [data] - Request body data
+   * @param {number} maxRetries - Maximum number of retry attempts
+   * @param {number} baseDelay - Base delay in milliseconds for exponential backoff
+   * @returns {Promise<Response>} Fetch response
+   */
+  async makeRequestWithRetry(
+    method,
+    path,
+    data = null,
+    maxRetries = 3,
+    baseDelay = 1000
+  ) {
     const url = `${this.baseURL}${path}`;
+    let lastError;
 
-    // Check rate limits
-    if (this.rateLimiter) {
-      const { duration, shouldWait } = this.rateLimiter.shouldWait('global');
-      if (shouldWait) {
-        await this.sleep(duration);
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        // Check rate limits
+        if (this.rateLimiter) {
+          const { duration, shouldWait } =
+            this.rateLimiter.shouldWait('global');
+          if (shouldWait) {
+            await this.sleep(duration);
+          }
+        }
+
+        const options = {
+          method,
+          headers: {
+            'Server-Key': this.apiKey,
+            'Content-Type': 'application/json',
+          },
+          signal: AbortSignal.timeout(this.timeout),
+        };
+
+        if (data && method !== 'GET') {
+          options.body = JSON.stringify(data);
+        }
+
+        const response = await fetch(url, options);
+
+        // Update rate limiter from response headers
+        if (this.rateLimiter && response.headers) {
+          const limit =
+            parseInt(response.headers.get('X-RateLimit-Limit')) || 0;
+          const remaining =
+            parseInt(response.headers.get('X-RateLimit-Remaining')) || 0;
+          const reset =
+            parseInt(response.headers.get('X-RateLimit-Reset')) || 0;
+
+          if (limit > 0) {
+            this.rateLimiter.updateFromHeaders(
+              'global',
+              limit,
+              remaining,
+              new Date(reset * 1000)
+            );
+          }
+        }
+
+        return response;
+      } catch (e) {
+        lastError = e;
+
+        // Check if this is a retryable error
+        if (attempt < maxRetries && this.isRetryableError(e)) {
+          const delay = this.calculateBackoffDelay(attempt, baseDelay);
+          console.warn(
+            `[ERLC Client] Request failed (attempt ${attempt + 1}/${
+              maxRetries + 1
+            }): ${e.message}. Retrying in ${delay}ms...`
+          );
+          await this.sleep(delay);
+          continue;
+        }
+
+        // If we've exhausted retries or it's not a retryable error, throw the error
+        throw e;
       }
     }
 
-    const options = {
-      method,
-      headers: {
-        'Server-Key': this.apiKey,
-        'Content-Type': 'application/json',
-      },
-      signal: AbortSignal.timeout(this.timeout),
-    };
+    // This should never be reached, but just in case
+    throw lastError;
+  }
 
-    if (data && method !== 'GET') {
-      options.body = JSON.stringify(data);
+  /**
+   * Check if an error is retryable
+   * @param {Error} error - The error to check
+   * @returns {boolean} Whether the error is retryable
+   */
+  isRetryableError(error) {
+    // Network connection errors that are likely transient
+    if (
+      error.code === 'ECONNRESET' ||
+      error.code === 'ECONNREFUSED' ||
+      error.code === 'ETIMEDOUT' ||
+      error.code === 'ENOTFOUND' ||
+      error.code === 'EAI_AGAIN'
+    ) {
+      return true;
     }
 
-    const response = await fetch(url, options);
-
-    // Update rate limiter from response headers
-    if (this.rateLimiter && response.headers) {
-      const limit = parseInt(response.headers.get('X-RateLimit-Limit')) || 0;
-      const remaining =
-        parseInt(response.headers.get('X-RateLimit-Remaining')) || 0;
-      const reset = parseInt(response.headers.get('X-RateLimit-Reset')) || 0;
-
-      if (limit > 0) {
-        this.rateLimiter.updateFromHeaders(
-          'global',
-          limit,
-          remaining,
-          new Date(reset * 1000)
-        );
-      }
+    // Fetch-specific network errors
+    if (error.name === 'TypeError' && error.message === 'fetch failed') {
+      return true;
     }
 
-    return response;
+    // Check if the error is caused by ECONNRESET in the cause chain
+    if (error.cause && this.isRetryableError(error.cause)) {
+      return true;
+    }
+
+    // HTTP 5xx server errors (but not 4xx client errors)
+    if (error.status >= 500 && error.status < 600) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Calculate exponential backoff delay with jitter
+   * @param {number} attempt - Current attempt number (0-based)
+   * @param {number} baseDelay - Base delay in milliseconds
+   * @returns {number} Delay in milliseconds
+   */
+  calculateBackoffDelay(attempt, baseDelay) {
+    // Exponential backoff: baseDelay * 2^attempt, with jitter
+    const exponentialDelay = baseDelay * Math.pow(2, attempt);
+    // Add jitter (±25% random variation) to prevent thundering herd
+    const jitter = exponentialDelay * 0.25 * (Math.random() - 0.5);
+    return Math.max(500, exponentialDelay + jitter); // Minimum 500ms delay
   }
 
   /**
@@ -309,7 +405,7 @@ class ERLCClient {
     // Parse successful response
     try {
       return await response.json();
-    } catch (error) {
+    } catch (e) {
       throw new Error('Failed to parse response JSON');
     }
   }
