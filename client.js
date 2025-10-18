@@ -329,6 +329,11 @@ class ERLCClient {
       return true;
     }
 
+    // Timeout errors are transient and should be retried
+    if (error.name === 'TimeoutError') {
+      return true;
+    }
+
     // Check if the error is caused by ECONNRESET in the cause chain
     if (error.cause && this.isRetryableError(error.cause)) {
       return true;
