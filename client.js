@@ -236,9 +236,22 @@ class ERLCClient {
   ) {
     const url = `${this.baseURL}${path}`;
     let lastError;
+    
+    // Track the overall timeout across all retry attempts
+    const startTime = Date.now();
+    const overallTimeout = this.timeout;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
+        // Calculate remaining timeout
+        const elapsedTime = Date.now() - startTime;
+        const remainingTimeout = overallTimeout - elapsedTime;
+        
+        // Skip retry if remaining timeout is too low (less than 1 second)
+        if (remainingTimeout < 1000) {
+          throw new Error(`Timeout: Insufficient time remaining (${remainingTimeout}ms) to retry request`);
+        }
+        
         // Check rate limits
         if (this.rateLimiter) {
           const { duration, shouldWait } =
@@ -254,7 +267,7 @@ class ERLCClient {
             'Server-Key': this.apiKey,
             'Content-Type': 'application/json',
           },
-          signal: AbortSignal.timeout(this.timeout),
+          signal: AbortSignal.timeout(remainingTimeout),
         };
 
         if (data && method !== 'GET') {
@@ -289,6 +302,21 @@ class ERLCClient {
         // Check if this is a retryable error
         if (attempt < maxRetries && this.isRetryableError(e)) {
           const delay = this.calculateBackoffDelay(attempt, baseDelay);
+          
+          // Check if we have enough time left for the retry delay
+          const elapsedTime = Date.now() - startTime;
+          const remainingTimeout = overallTimeout - elapsedTime;
+          
+          if (remainingTimeout < delay + 1000) {
+            // Not enough time for delay + minimum request time
+            console.warn(
+              `[ERLC Client] Request failed (attempt ${attempt + 1}/${
+                maxRetries + 1
+              }): ${e.message}. Insufficient time remaining (${remainingTimeout}ms) to retry.`
+            );
+            throw e;
+          }
+          
           console.warn(
             `[ERLC Client] Request failed (attempt ${attempt + 1}/${
               maxRetries + 1
