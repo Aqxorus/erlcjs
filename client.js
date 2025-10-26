@@ -8,6 +8,7 @@ const { RequestQueue } = require('./queue');
 const { MemoryCache } = require('./cache');
 const { Subscription, getDefaultEventConfig } = require('./subscription');
 const { getFriendlyErrorMessage } = require('./types');
+const Sentry = require('@sentry/node');
 
 class ERLCClient {
   /**
@@ -236,22 +237,12 @@ class ERLCClient {
   ) {
     const url = `${this.baseURL}${path}`;
     let lastError;
-    
-    // Track the overall timeout across all retry attempts
-    const startTime = Date.now();
-    const overallTimeout = this.timeout;
+    // Per-attempt timeout (minimum 2000ms safeguard). This avoids passing
+    // a near-zero timeout to AbortSignal.timeout which would immediately abort.
+    const perAttemptTimeout = Math.max(2000, Number(this.timeout) || 0);
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        // Calculate remaining timeout
-        const elapsedTime = Date.now() - startTime;
-        const remainingTimeout = overallTimeout - elapsedTime;
-        
-        // Skip retry if remaining timeout is too low (less than 1 second)
-        if (remainingTimeout < 1000) {
-          throw new Error(`Timeout: Insufficient time remaining (${remainingTimeout}ms) to retry request`);
-        }
-        
         // Check rate limits
         if (this.rateLimiter) {
           const { duration, shouldWait } =
@@ -267,14 +258,40 @@ class ERLCClient {
             'Server-Key': this.apiKey,
             'Content-Type': 'application/json',
           },
-          signal: AbortSignal.timeout(remainingTimeout),
+          // Use a per-attempt timeout to prevent overly aggressive timeouts
+          // caused by accumulated delays (queue, rate limit waits, backoff).
+          signal: AbortSignal.timeout(perAttemptTimeout),
         };
 
         if (data && method !== 'GET') {
           options.body = JSON.stringify(data);
         }
 
-        const response = await fetch(url, options);
+        const response = await Sentry.startSpan(
+          {
+            op: 'http.client',
+            name: `${method} ${path}`,
+          },
+          async (span) => {
+            span.setAttribute('http.method', method);
+            span.setAttribute('http.target', path);
+            span.setAttribute('http.url', url);
+            span.setAttribute('retry.attempt', attempt);
+            span.setAttribute('timeout.ms', perAttemptTimeout);
+
+            try {
+              const res = await fetch(url, options);
+              span.setAttribute('http.status_code', res.status);
+              span.setAttribute('http.ok', res.ok);
+              return res;
+            } catch (err) {
+              span.setAttribute('error', true);
+              span.setAttribute('error.name', err?.name || 'Error');
+              span.setAttribute('error.message', err?.message || '');
+              throw err;
+            }
+          }
+        );
 
         // Update rate limiter from response headers
         if (this.rateLimiter && response.headers) {
@@ -302,25 +319,11 @@ class ERLCClient {
         // Check if this is a retryable error
         if (attempt < maxRetries && this.isRetryableError(e)) {
           const delay = this.calculateBackoffDelay(attempt, baseDelay);
-          
-          // Check if we have enough time left for the retry delay
-          const elapsedTime = Date.now() - startTime;
-          const remainingTimeout = overallTimeout - elapsedTime;
-          
-          if (remainingTimeout < delay + 1000) {
-            // Not enough time for delay + minimum request time
-            console.warn(
-              `[ERLC Client] Request failed (attempt ${attempt + 1}/${
-                maxRetries + 1
-              }): ${e.message}. Insufficient time remaining (${remainingTimeout}ms) to retry.`
-            );
-            throw e;
-          }
-          
+
           console.warn(
             `[ERLC Client] Request failed (attempt ${attempt + 1}/${
               maxRetries + 1
-            }): ${e.message}. Retrying in ${delay}ms...`
+            }): ${e.message}. Retrying in ${Math.round(delay)}ms...`
           );
           await this.sleep(delay);
           continue;

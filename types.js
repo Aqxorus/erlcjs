@@ -178,7 +178,45 @@ function getFriendlyErrorMessage(err) {
   return err?.message || 'An unknown error occurred.';
 }
 
+/**
+ * Determine if an error indicates the private server is offline.
+ * @param {unknown} err - Error value to inspect
+ * @returns {boolean} True if the error represents an offline private server
+ */
+function isPrivateServerOfflineError(err) {
+  const inspected = new Set();
+  let current = err;
+
+  while (current && typeof current === 'object' && !inspected.has(current)) {
+    inspected.add(current);
+
+    const code = current.code ?? current?.data?.code;
+    const numericCode =
+      typeof code === 'string' ? Number.parseInt(code, 10) : code;
+    if (numericCode === 3002) {
+      return true;
+    }
+
+    const message = current.message ?? current?.data?.message;
+    if (
+      typeof message === 'string' &&
+      /server is currently offline/i.test(message)
+    ) {
+      return true;
+    }
+
+    current = current.cause;
+  }
+
+  if (typeof err === 'string') {
+    return /server is currently offline/i.test(err);
+  }
+
+  return false;
+}
+
 module.exports = {
   EventType,
   getFriendlyErrorMessage,
+  isPrivateServerOfflineError,
 };

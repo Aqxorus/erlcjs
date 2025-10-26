@@ -16,6 +16,8 @@ A powerful, feature-rich JavaScript client for the Emergency Response: Liberty C
 - [Request Queueing](#request-queueing)
 - [Caching](#caching)
 - [Best Practices](#best-practices)
+- [Timeouts](#timeouts)
+- [Best Practices](#best-practices)
 - [Types](#types)
 - [Contributing](#contributing)
 - [License](#license)
@@ -181,6 +183,24 @@ const client = createClient('your-api-key', {
     prefix: 'erlc:',
   },
 });
+```
+
+## Timeouts
+
+The `timeout` option is applied per HTTP attempt. When a request fails with a retryable error (e.g., transient network failure, timeout, or 5xx), the client retries with exponential backoff. Queue delays, rate-limit waits, and backoff delays do not reduce the per-attempt timeout.
+
+- Default: `timeout` = 10000 ms unless overridden
+- Recommended: set `timeout` to 15000–30000 ms for endpoints that can be slow under load
+- Retries: up to 3 attempts by default, with jittered exponential backoff
+
+Example:
+
+```javascript
+const client = newClientWithQueueAndCache(
+  apiKey,
+  { workers: 2, interval: 200, ttl: 30000 },
+  { timeout: 20000 } // per-attempt timeout
+);
 ```
 
 ## API Methods

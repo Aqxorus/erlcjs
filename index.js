@@ -9,7 +9,7 @@ const {
   createClient,
   getFriendlyErrorMessage,
 } = require('./client');
-const { EventType } = require('./types');
+const { EventType, isPrivateServerOfflineError } = require('./types');
 const { RateLimiter } = require('./rateLimiter');
 const { RequestQueue } = require('./queue');
 const { MemoryCache } = require('./cache');
@@ -108,6 +108,7 @@ module.exports = {
 
   // Utility exports
   getFriendlyErrorMessage,
+  isPrivateServerOfflineError,
   EventType,
   getDefaultEventConfig,
 
