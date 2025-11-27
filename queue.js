@@ -47,7 +47,7 @@ class RequestQueue {
 
     while (!this.stop && this.running) {
       if (this.queue.length === 0) {
-        await this.sleep(50); // Short sleep when queue is empty
+        await this.sleep(50);
         continue;
       }
 
@@ -55,7 +55,6 @@ class RequestQueue {
       if (!request) continue;
 
       try {
-        // Check if request was cancelled
         if (request.cancelled) {
           request.reject(new Error('Request was cancelled'));
           continue;
@@ -67,7 +66,6 @@ class RequestQueue {
         request.reject(e);
       }
 
-      // Wait before processing next request
       if (this.interval > 0) {
         await this.sleep(this.interval);
       }

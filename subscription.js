@@ -38,7 +38,6 @@ class Subscription {
     this.pollInterval = null;
     this.eventQueue = [];
 
-    // Track last seen data for change detection
     this.lastState = {
       players: new Set(),
       commandTime: 0,
@@ -66,12 +65,10 @@ class Subscription {
 
     this.running = true;
 
-    // Initialize state if requested
     if (this.config.includeInitialState) {
       await this.initializeState();
     }
 
-    // Start polling
     this.pollInterval = setInterval(() => {
       this.poll().catch((e) => {
         if (this.config.logErrors) {
@@ -172,7 +169,6 @@ class Subscription {
         }
       }
 
-      // Process events
       for (const event of events) {
         this.processEvent(event);
       }
@@ -223,7 +219,6 @@ class Subscription {
 
     const changes = [];
 
-    // Check for new players (joins)
     for (const player of players) {
       if (!oldSet.has(player.Player)) {
         changes.push({
@@ -233,7 +228,6 @@ class Subscription {
       }
     }
 
-    // Check for removed players (leaves)
     for (const playerName of oldSet) {
       if (!currentSet.has(playerName)) {
         changes.push({
@@ -378,12 +372,10 @@ class Subscription {
    * @param {Event} event - The event to process
    */
   processEvent(event) {
-    // Apply filter if configured
     if (this.config.filterFunc && !this.config.filterFunc(event)) {
       return;
     }
 
-    // Call appropriate handler
     switch (event.type) {
       case EventType.PLAYERS:
         if (this.handlers.playerHandler) {

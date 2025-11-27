@@ -98,7 +98,6 @@ function newClientWithQueueAndCache(apiKey, config = {}, options = {}) {
 }
 
 module.exports = {
-  // Main exports
   ERLCClient,
   createClient,
   newClient,
@@ -106,13 +105,11 @@ module.exports = {
   newClientWithCache,
   newClientWithQueueAndCache,
 
-  // Utility exports
   getFriendlyErrorMessage,
   isPrivateServerOfflineError,
   EventType,
   getDefaultEventConfig,
 
-  // Component exports (for advanced usage)
   RateLimiter,
   RequestQueue,
   MemoryCache,

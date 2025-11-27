@@ -19,8 +19,7 @@ class MemoryCache {
     };
     this.onEvict = null;
 
-    // Start cleanup loop
-    this.cleanupInterval = setInterval(() => this.cleanup(), 60000); // Every minute
+    this.cleanupInterval = setInterval(() => this.cleanup(), 60000);
   }
 
   /**
@@ -36,7 +35,6 @@ class MemoryCache {
       return { value: null, found: false };
     }
 
-    // Check if expired
     if (item.expiration && Date.now() > item.expiration.getTime()) {
       this.items.delete(key);
       this.stats.misses++;
@@ -54,18 +52,15 @@ class MemoryCache {
    * @param {number} ttl - Time to live in milliseconds
    */
   set(key, value, ttl) {
-    // Calculate expiration
     let expiration = null;
     if (ttl > 0) {
       expiration = new Date(Date.now() + ttl);
     }
 
-    // Check if we need to evict items
     if (this.items.size >= this.maxItems && !this.items.has(key)) {
       this.evictOldest();
     }
 
-    // Set the item
     this.items.set(key, {
       value,
       expiration,

@@ -24,11 +24,10 @@ class ERLCClient {
     this.apiKey = apiKey;
     this.baseURL = options.baseURL || 'https://api.policeroleplay.community/v1';
     this.timeout = options.timeout || 10000;
+    this.keepAlive = options.keepAlive !== false;
 
-    // Initialize rate limiter
     this.rateLimiter = new RateLimiter();
 
-    // Initialize request queue if configured
     this.queue = null;
     if (options.requestQueue) {
       this.queue = new RequestQueue(
@@ -38,7 +37,6 @@ class ERLCClient {
       this.queue.start();
     }
 
-    // Initialize cache if configured
     this.cache = null;
     if (options.cache && options.cache.enabled) {
       this.cache = {
@@ -161,7 +159,6 @@ class ERLCClient {
   async get(path) {
     const cacheKey = this.cache ? `${this.cache.prefix}${path}` : null;
 
-    // Check cache first
     if (this.cache && cacheKey) {
       const cached = this.cache.instance.get(cacheKey);
       if (cached.found) {
@@ -172,7 +169,6 @@ class ERLCClient {
     const execute = async () => {
       const response = await this.makeRequest('GET', path);
 
-      // Cache successful responses
       if (this.cache && cacheKey && response.ok) {
         const data = await response.json();
         this.cache.instance.set(cacheKey, data, this.cache.ttl);
@@ -237,13 +233,10 @@ class ERLCClient {
   ) {
     const url = `${this.baseURL}${path}`;
     let lastError;
-    // Per-attempt timeout (minimum 2000ms safeguard). This avoids passing
-    // a near-zero timeout to AbortSignal.timeout which would immediately abort.
     const perAttemptTimeout = Math.max(2000, Number(this.timeout) || 0);
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        // Check rate limits
         if (this.rateLimiter) {
           const { duration, shouldWait } =
             this.rateLimiter.shouldWait('global');
@@ -257,9 +250,9 @@ class ERLCClient {
           headers: {
             'Server-Key': this.apiKey,
             'Content-Type': 'application/json',
+            // If keep-alive is disabled or we're retrying after a transient socket error, force a fresh connection
+            ...(!this.keepAlive || attempt > 0 ? { Connection: 'close' } : {}),
           },
-          // Use a per-attempt timeout to prevent overly aggressive timeouts
-          // caused by accumulated delays (queue, rate limit waits, backoff).
           signal: AbortSignal.timeout(perAttemptTimeout),
         };
 
@@ -293,7 +286,62 @@ class ERLCClient {
           }
         );
 
-        // Update rate limiter from response headers
+        // If we are rate limited, respect server-provided cooldown and retry
+        if (response.status === 429) {
+          // Try to compute a meaningful retry delay
+          const retryAfterHeader = response.headers.get('Retry-After');
+          const resetHeader = response.headers.get('X-RateLimit-Reset');
+
+          let retryAfterMs = 0;
+          if (retryAfterHeader) {
+            const asNumber = Number(retryAfterHeader);
+            if (!Number.isNaN(asNumber)) {
+              retryAfterMs = Math.max(0, asNumber * 1000);
+            } else {
+              const date = new Date(retryAfterHeader);
+              const diff = date.getTime() - Date.now();
+              if (!Number.isNaN(date.getTime())) {
+                retryAfterMs = Math.max(0, diff);
+              }
+            }
+          }
+
+          if (!retryAfterMs && resetHeader) {
+            const resetEpoch = Number(resetHeader);
+            if (!Number.isNaN(resetEpoch)) {
+              const diff = resetEpoch * 1000 - Date.now();
+              retryAfterMs = Math.max(0, diff);
+            }
+          }
+
+          if (!retryAfterMs) {
+            // Fallback to a sane default if headers are missing
+            retryAfterMs = 5000;
+          }
+
+          if (this.rateLimiter) {
+            this.rateLimiter.updateFromHeaders(
+              'global',
+              0,
+              0,
+              new Date(Date.now() + retryAfterMs)
+            );
+          }
+
+          if (attempt < maxRetries) {
+            console.warn(
+              `[ERLC Client] HTTP 429 received. Respecting Retry-After and retrying in ${Math.round(
+                retryAfterMs
+              )}ms (attempt ${attempt + 1}/${maxRetries + 1}).`
+            );
+            await this.sleep(retryAfterMs);
+            continue; // try again
+          }
+
+          // Exhausted retries, return response to be handled by handleResponse
+          return response;
+        }
+
         if (this.rateLimiter && response.headers) {
           const limit =
             parseInt(response.headers.get('X-RateLimit-Limit')) || 0;
@@ -316,7 +364,6 @@ class ERLCClient {
       } catch (e) {
         lastError = e;
 
-        // Check if this is a retryable error
         if (attempt < maxRetries && this.isRetryableError(e)) {
           const delay = this.calculateBackoffDelay(attempt, baseDelay);
 
@@ -329,12 +376,26 @@ class ERLCClient {
           continue;
         }
 
-        // If we've exhausted retries or it's not a retryable error, throw the error
+        try {
+          Sentry.captureException(e, {
+            tags: { module: 'ERLCClient', op: 'http.client' },
+            extra: {
+              method,
+              path,
+              url,
+              attempt,
+              maxRetries,
+              message: e?.message,
+              name: e?.name,
+              code: e?.code,
+            },
+          });
+        } catch {}
+
         throw e;
       }
     }
 
-    // This should never be reached, but just in case
     throw lastError;
   }
 
@@ -344,7 +405,6 @@ class ERLCClient {
    * @returns {boolean} Whether the error is retryable
    */
   isRetryableError(error) {
-    // Network connection errors that are likely transient
     if (
       error.code === 'ECONNRESET' ||
       error.code === 'ECONNREFUSED' ||
@@ -355,22 +415,29 @@ class ERLCClient {
       return true;
     }
 
-    // Fetch-specific network errors
     if (error.name === 'TypeError' && error.message === 'fetch failed') {
       return true;
     }
 
-    // Timeout errors are transient and should be retried
+    // Undici/Node fetch transient socket errors
+    if (
+      error.name === 'SocketError' ||
+      (typeof error.message === 'string' &&
+        (error.message.includes('other side closed') ||
+          error.message.includes('socket hang up') ||
+          error.message.includes('reset by peer')))
+    ) {
+      return true;
+    }
+
     if (error.name === 'TimeoutError') {
       return true;
     }
 
-    // Check if the error is caused by ECONNRESET in the cause chain
     if (error.cause && this.isRetryableError(error.cause)) {
       return true;
     }
 
-    // HTTP 5xx server errors (but not 4xx client errors)
     if (error.status >= 500 && error.status < 600) {
       return true;
     }
@@ -385,11 +452,9 @@ class ERLCClient {
    * @returns {number} Delay in milliseconds
    */
   calculateBackoffDelay(attempt, baseDelay) {
-    // Exponential backoff: baseDelay * 2^attempt, with jitter
     const exponentialDelay = baseDelay * Math.pow(2, attempt);
-    // Add jitter (±25% random variation) to prevent thundering herd
     const jitter = exponentialDelay * 0.25 * (Math.random() - 0.5);
-    return Math.max(500, exponentialDelay + jitter); // Minimum 500ms delay
+    return Math.max(500, exponentialDelay + jitter);
   }
 
   /**
@@ -399,13 +464,41 @@ class ERLCClient {
    */
   async handleResponse(response) {
     if (response.status === 429) {
-      // Rate limited - update rate limiter and throw error
+      const retryAfterHeader = response.headers.get('Retry-After');
+      const resetHeader = response.headers.get('X-RateLimit-Reset');
+
+      let retryAfterMs = 0;
+      if (retryAfterHeader) {
+        const asNumber = Number(retryAfterHeader);
+        if (!Number.isNaN(asNumber)) {
+          retryAfterMs = Math.max(0, asNumber * 1000);
+        } else {
+          const date = new Date(retryAfterHeader);
+          const diff = date.getTime() - Date.now();
+          if (!Number.isNaN(date.getTime())) {
+            retryAfterMs = Math.max(0, diff);
+          }
+        }
+      }
+
+      if (!retryAfterMs && resetHeader) {
+        const resetEpoch = Number(resetHeader);
+        if (!Number.isNaN(resetEpoch)) {
+          const diff = resetEpoch * 1000 - Date.now();
+          retryAfterMs = Math.max(0, diff);
+        }
+      }
+
+      if (!retryAfterMs) {
+        retryAfterMs = 5000;
+      }
+
       if (this.rateLimiter) {
         this.rateLimiter.updateFromHeaders(
           'global',
           0,
           0,
-          new Date(Date.now() + 5000) // 5 second reset
+          new Date(Date.now() + retryAfterMs)
         );
       }
 
@@ -418,11 +511,12 @@ class ERLCClient {
 
       const error = new Error(errorData.message || 'Rate limited');
       error.code = errorData.code || 4001;
+      error.status = 429;
+      error.retryAfter = retryAfterMs;
       throw error;
     }
 
     if (!response.ok) {
-      // Try to parse error response
       let errorData;
       try {
         errorData = await response.json();
@@ -438,7 +532,6 @@ class ERLCClient {
       throw error;
     }
 
-    // Parse successful response
     try {
       return await response.json();
     } catch (e) {
