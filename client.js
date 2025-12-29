@@ -175,7 +175,11 @@ class ERLCClient {
         return data;
       }
 
-      return this.handleResponse(response);
+      return this.handleResponse(response, {
+        method: 'GET',
+        path,
+        url: response?.url || `${this.baseURL}${path}`,
+      });
     };
 
     if (this.queue) {
@@ -194,7 +198,11 @@ class ERLCClient {
   async post(path, data) {
     const execute = async () => {
       const response = await this.makeRequest('POST', path, data);
-      return this.handleResponse(response);
+      return this.handleResponse(response, {
+        method: 'POST',
+        path,
+        url: response?.url || `${this.baseURL}${path}`,
+      });
     };
 
     if (this.queue) {
@@ -250,7 +258,6 @@ class ERLCClient {
           headers: {
             'Server-Key': this.apiKey,
             'Content-Type': 'application/json',
-            // If keep-alive is disabled or we're retrying after a transient socket error, force a fresh connection
             ...(!this.keepAlive || attempt > 0 ? { Connection: 'close' } : {}),
           },
           signal: AbortSignal.timeout(perAttemptTimeout),
@@ -286,9 +293,7 @@ class ERLCClient {
           }
         );
 
-        // If we are rate limited, respect server-provided cooldown and retry
         if (response.status === 429) {
-          // Try to compute a meaningful retry delay
           const retryAfterHeader = response.headers.get('Retry-After');
           const resetHeader = response.headers.get('X-RateLimit-Reset');
 
@@ -315,7 +320,6 @@ class ERLCClient {
           }
 
           if (!retryAfterMs) {
-            // Fallback to a sane default if headers are missing
             retryAfterMs = 5000;
           }
 
@@ -335,11 +339,28 @@ class ERLCClient {
               )}ms (attempt ${attempt + 1}/${maxRetries + 1}).`
             );
             await this.sleep(retryAfterMs);
-            continue; // try again
+            continue;
           }
 
-          // Exhausted retries, return response to be handled by handleResponse
           return response;
+        }
+
+        if (
+          (response.status === 502 ||
+            response.status === 503 ||
+            response.status === 504) &&
+          attempt < maxRetries
+        ) {
+          const delay = this.calculateBackoffDelay(attempt, baseDelay);
+          console.warn(
+            `[ERLC Client] HTTP ${
+              response.status
+            } received. Retrying in ${Math.round(delay)}ms (attempt ${
+              attempt + 1
+            }/${maxRetries + 1}).`
+          );
+          await this.sleep(delay);
+          continue;
         }
 
         if (this.rateLimiter && response.headers) {
@@ -419,7 +440,6 @@ class ERLCClient {
       return true;
     }
 
-    // Undici/Node fetch transient socket errors
     if (
       error.name === 'SocketError' ||
       (typeof error.message === 'string' &&
@@ -460,9 +480,21 @@ class ERLCClient {
   /**
    * Handle API response and errors
    * @param {Response} response - Fetch response
+   * @param {{method?: string, path?: string, url?: string}} [request] - Request context
    * @returns {Promise<*>} Parsed response data
    */
-  async handleResponse(response) {
+  async handleResponse(response, request = {}) {
+    const tryParseJson = (text) => {
+      if (!text || typeof text !== 'string') return null;
+      const trimmed = text.trim();
+      if (!trimmed) return null;
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        return null;
+      }
+    };
+
     if (response.status === 429) {
       const retryAfterHeader = response.headers.get('Retry-After');
       const resetHeader = response.headers.get('X-RateLimit-Reset');
@@ -502,40 +534,75 @@ class ERLCClient {
         );
       }
 
-      let errorData;
+      let rawText;
       try {
-        errorData = await response.json();
+        rawText = await response.text();
       } catch {
-        errorData = { code: 4001, message: 'Rate limited' };
+        rawText = '';
       }
+
+      const parsed = tryParseJson(rawText);
+      const errorData =
+        parsed && typeof parsed === 'object'
+          ? parsed
+          : { code: 4001, message: 'Rate limited' };
 
       const error = new Error(errorData.message || 'Rate limited');
       error.code = errorData.code || 4001;
       error.status = 429;
       error.retryAfter = retryAfterMs;
+      error.statusText = response.statusText;
+      error.method = request?.method;
+      error.path = request?.path;
+      error.url = request?.url || response?.url;
+      if (rawText) {
+        error.responseBody = rawText.slice(0, 1024);
+      }
       throw error;
     }
 
     if (!response.ok) {
-      let errorData;
+      let rawText;
       try {
-        errorData = await response.json();
+        rawText = await response.text();
       } catch {
-        errorData = {
-          code: 0,
-          message: `HTTP ${response.status}: ${response.statusText}`,
-        };
+        rawText = '';
       }
+
+      const parsed = tryParseJson(rawText);
+      const errorData =
+        parsed && typeof parsed === 'object'
+          ? parsed
+          : {
+              code: 0,
+              message: `HTTP ${response.status}: ${
+                response.statusText || 'Error'
+              }`,
+            };
 
       const error = new Error(errorData.message || 'Unknown error');
       error.code = errorData.code || 0;
+      error.status = response.status;
+      error.statusText = response.statusText;
+      error.method = request?.method;
+      error.path = request?.path;
+      error.url = request?.url || response?.url;
+      if (rawText) {
+        error.responseBody = rawText.slice(0, 1024);
+      }
       throw error;
     }
 
     try {
       return await response.json();
     } catch (e) {
-      throw new Error('Failed to parse response JSON');
+      const error = new Error('Failed to parse response JSON');
+      error.status = response.status;
+      error.statusText = response.statusText;
+      error.method = request?.method;
+      error.path = request?.path;
+      error.url = request?.url || response?.url;
+      throw error;
     }
   }
 

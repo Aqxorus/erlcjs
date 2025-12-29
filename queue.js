@@ -12,6 +12,7 @@ class RequestQueue {
     this.workers = Math.max(1, workers);
     this.interval = Math.max(0, interval);
     this.queue = [];
+    this.queueOffset = 0;
     this.running = false;
     this.activeWorkers = 0;
     this.stop = false;
@@ -46,12 +47,12 @@ class RequestQueue {
     this.activeWorkers++;
 
     while (!this.stop && this.running) {
-      if (this.queue.length === 0) {
+      if (this.getQueueLength() === 0) {
         await this.sleep(50);
         continue;
       }
 
-      const request = this.queue.shift();
+      const request = this.dequeue();
       if (!request) continue;
 
       try {
@@ -91,7 +92,6 @@ class RequestQueue {
 
       this.queue.push(request);
 
-      // Auto-start if not running
       if (!this.running) {
         this.start();
       }
@@ -104,7 +104,7 @@ class RequestQueue {
    */
   getStatus() {
     return {
-      queueLength: this.queue.length,
+      queueLength: this.getQueueLength(),
       activeWorkers: this.activeWorkers,
       running: this.running,
     };
@@ -114,11 +114,48 @@ class RequestQueue {
    * Clear all pending requests
    */
   clear() {
-    const pendingRequests = this.queue.splice(0);
+    const pendingRequests = this.queue.slice(this.queueOffset);
+    this.queue = [];
+    this.queueOffset = 0;
     pendingRequests.forEach((request) => {
       request.cancelled = true;
       request.reject(new Error('Queue was cleared'));
     });
+  }
+
+  /**
+   * Remove next request without incurring O(n) array shifts
+   * @returns {Object|null}
+   */
+  dequeue() {
+    if (this.getQueueLength() === 0) {
+      return null;
+    }
+
+    const request = this.queue[this.queueOffset];
+    this.queue[this.queueOffset] = undefined;
+    this.queueOffset++;
+
+    if (this.queueOffset >= this.queue.length) {
+      this.queue = [];
+      this.queueOffset = 0;
+      return request;
+    }
+
+    if (this.queueOffset > 1024 && this.queueOffset * 2 >= this.queue.length) {
+      this.queue = this.queue.slice(this.queueOffset);
+      this.queueOffset = 0;
+    }
+
+    return request;
+  }
+
+  /**
+   * Current number of queued requests
+   * @returns {number}
+   */
+  getQueueLength() {
+    return this.queue.length - this.queueOffset;
   }
 
   /**

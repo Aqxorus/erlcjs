@@ -17,7 +17,7 @@ function getDefaultEventConfig() {
     retryInterval: 5000, // 5 seconds
     includeInitialState: false,
     batchEvents: false,
-    batchWindow: 100, // 100ms
+    batchWindow: 100, // 100 ms
     logErrors: false,
     timeFormat: 'ISO',
   };
@@ -37,6 +37,9 @@ class Subscription {
     this.running = false;
     this.pollInterval = null;
     this.eventQueue = [];
+
+    this.pollInFlight = false;
+    this.nextAllowedPollAt = 0;
 
     this.lastState = {
       players: new Set(),
@@ -70,14 +73,28 @@ class Subscription {
     }
 
     this.pollInterval = setInterval(() => {
-      this.poll().catch((e) => {
-        if (this.config.logErrors) {
-          console.error('Event polling error:', e);
-        }
-        if (this.config.errorHandler) {
-          this.config.errorHandler(e);
-        }
-      });
+      if (!this.running) return;
+      if (this.pollInFlight) return;
+      if (Date.now() < this.nextAllowedPollAt) return;
+
+      this.pollInFlight = true;
+      this.poll()
+        .catch((e) => {
+          if (this.config.retryOnError) {
+            const retryMs = Math.max(0, Number(this.config.retryInterval) || 0);
+            this.nextAllowedPollAt = Date.now() + retryMs;
+          }
+
+          if (this.config.logErrors) {
+            console.error('Event polling error:', e);
+          }
+          if (this.config.errorHandler) {
+            this.config.errorHandler(e);
+          }
+        })
+        .finally(() => {
+          this.pollInFlight = false;
+        });
     }, this.config.pollInterval);
   }
 
@@ -86,6 +103,9 @@ class Subscription {
    */
   stop() {
     this.running = false;
+
+    this.pollInFlight = false;
+    this.nextAllowedPollAt = 0;
 
     if (this.pollInterval) {
       clearInterval(this.pollInterval);
@@ -173,13 +193,6 @@ class Subscription {
         this.processEvent(event);
       }
     } catch (e) {
-      if (this.config.retryOnError) {
-        setTimeout(() => {
-          if (this.running) {
-            this.poll();
-          }
-        }, this.config.retryInterval);
-      }
       throw e;
     }
   }
