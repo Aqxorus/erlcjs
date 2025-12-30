@@ -5,9 +5,10 @@
 
 const { RateLimiter } = require('./rateLimiter');
 const { RequestQueue } = require('./queue');
-const { MemoryCache } = require('./cache');
+const { MemoryCache, RedisCache } = require('./cache');
 const { Subscription, getDefaultEventConfig } = require('./subscription');
 const { getFriendlyErrorMessage } = require('./types');
+const { PRCAPIError } = require('./errors');
 const Sentry = require('@sentry/node');
 
 class ERLCClient {
@@ -25,6 +26,7 @@ class ERLCClient {
     this.baseURL = options.baseURL || 'https://api.policeroleplay.community/v1';
     this.timeout = options.timeout || 10000;
     this.keepAlive = options.keepAlive !== false;
+    this.globalKey = options.globalKey;
 
     this.rateLimiter = new RateLimiter();
 
@@ -39,8 +41,18 @@ class ERLCClient {
 
     this.cache = null;
     if (options.cache && options.cache.enabled) {
+      const redisUrl = options.cache.redisUrl;
+      const redisKeyPrefix = options.cache.redisKeyPrefix;
+
+      const store = redisUrl
+        ? new RedisCache({
+            url: redisUrl,
+            keyPrefix: redisKeyPrefix || '',
+          })
+        : new MemoryCache(options.cache.maxItems);
+
       this.cache = {
-        instance: new MemoryCache(options.cache.maxItems),
+        store,
         ttl: options.cache.ttl || 60000,
         staleIfError: options.cache.staleIfError || false,
         prefix: options.cache.prefix || 'erlc:',
@@ -52,72 +64,88 @@ class ERLCClient {
    * Get a list of players currently on the server
    * @returns {Promise<ERLCServerPlayer[]>} Array of players
    */
-  async getPlayers() {
-    return this.get('/server/players');
+  async getPlayers(options) {
+    return this.get('/server/players', options);
+  }
+
+  /**
+   * Get current server status (erlc.ts parity)
+   * @returns {Promise<Object>}
+   */
+  async getServerStatus(options) {
+    return this.getServer(options);
   }
 
   /**
    * Get command execution history
    * @returns {Promise<ERLCCommandLog[]>} Array of command logs
    */
-  async getCommandLogs() {
-    return this.get('/server/commandlogs');
+  async getCommandLogs(options) {
+    return this.get('/server/commandlogs', options);
   }
 
   /**
    * Get moderation call history
    * @returns {Promise<ERLCModCallLog[]>} Array of mod call logs
    */
-  async getModCalls() {
-    return this.get('/server/modcalls');
+  async getModCalls(options) {
+    return this.get('/server/modcalls', options);
   }
 
   /**
    * Get kill log history
    * @returns {Promise<ERLCKillLog[]>} Array of kill logs
    */
-  async getKillLogs() {
-    return this.get('/server/killlogs');
+  async getKillLogs(options) {
+    return this.get('/server/killlogs', options);
   }
 
   /**
    * Get server join/leave history
    * @returns {Promise<ERLCJoinLog[]>} Array of join logs
    */
-  async getJoinLogs() {
-    return this.get('/server/joinlogs');
+  async getJoinLogs(options) {
+    return this.get('/server/joinlogs', options);
   }
 
   /**
    * Get list of vehicles on the server
    * @returns {Promise<ERLCVehicle[]>} Array of vehicles
    */
-  async getVehicles() {
-    return this.get('/server/vehicles');
+  async getVehicles(options) {
+    return this.get('/server/vehicles', options);
   }
 
   /**
    * Get server information and player count
    * @returns {Promise<Object>} Server information
    */
-  async getServer() {
-    return this.get('/server');
+  async getServer(options) {
+    return this.get('/server', options);
   }
 
   /**
    * Get server queue information
    * @returns {Promise<Object>} Queue information
    */
-  async getQueue() {
-    return this.get('/server/queue');
+  async getQueue(options) {
+    return this.get('/server/queue', options);
   }
 
   /**
    * Get server ban information
    * @returns {Promise<Object>} Ban information
    */
-  async getBans() {
-    return this.get('/server/bans');
+  async getBans(options) {
+    return this.get('/server/bans', options);
+  }
+
+  /**
+   * Get server staff information
+   * @returns {Promise<Object>}
+   */
+  async getStaff(options) {
+    return this.get('/server/staff', options);
   }
 
   /**
@@ -156,22 +184,44 @@ class ERLCClient {
    * @param {string} path - API endpoint path
    * @returns {Promise<*>} Response data
    */
-  async get(path) {
+  async get(path, options = {}) {
     const cacheKey = this.cache ? `${this.cache.prefix}${path}` : null;
+    const shouldCache = !!this.cache && options.cache !== false;
+    const ttlOverride = Number(options.cacheMaxAge);
+    const ttl =
+      Number.isFinite(ttlOverride) && ttlOverride >= 0
+        ? ttlOverride
+        : this.cache?.ttl;
 
-    if (this.cache && cacheKey) {
-      const cached = this.cache.instance.get(cacheKey);
-      if (cached.found) {
+    let staleValue = null;
+
+    if (shouldCache && cacheKey) {
+      const store = this.cache.store;
+      const cached =
+        store instanceof MemoryCache
+          ? store.getWithMeta(cacheKey, { allowStale: this.cache.staleIfError })
+          : await store.get(cacheKey);
+
+      if (cached?.found && !cached?.isStale) {
         return cached.value;
+      }
+      if (cached?.found && cached?.isStale) {
+        staleValue = cached.value;
       }
     }
 
     const execute = async () => {
       const response = await this.makeRequest('GET', path);
 
-      if (this.cache && cacheKey && response.ok) {
+      if (shouldCache && cacheKey && response.ok) {
         const data = await response.json();
-        this.cache.instance.set(cacheKey, data, this.cache.ttl);
+        try {
+          if (this.cache.store instanceof MemoryCache) {
+            this.cache.store.set(cacheKey, data, ttl);
+          } else {
+            await this.cache.store.set(cacheKey, data, ttl);
+          }
+        } catch {}
         return data;
       }
 
@@ -182,11 +232,16 @@ class ERLCClient {
       });
     };
 
-    if (this.queue) {
-      return this.queue.enqueue(execute);
-    }
+    const run = this.queue ? () => this.queue.enqueue(execute) : execute;
 
-    return execute();
+    try {
+      return await run();
+    } catch (e) {
+      if (this.cache && this.cache.staleIfError && staleValue !== null) {
+        return staleValue;
+      }
+      throw e;
+    }
   }
 
   /**
@@ -259,6 +314,7 @@ class ERLCClient {
             'Server-Key': this.apiKey,
             'Content-Type': 'application/json',
             ...(!this.keepAlive || attempt > 0 ? { Connection: 'close' } : {}),
+            ...(this.globalKey ? { Authorization: this.globalKey } : {}),
           },
           signal: AbortSignal.timeout(perAttemptTimeout),
         };
@@ -297,7 +353,23 @@ class ERLCClient {
           const retryAfterHeader = response.headers.get('Retry-After');
           const resetHeader = response.headers.get('X-RateLimit-Reset');
 
-          let retryAfterMs = 0;
+          let bodyRetryAfterMs = 0;
+          try {
+            const cloned = response.clone();
+            const body = await cloned.json().catch(() => null);
+            if (
+              body &&
+              typeof body.retry_after === 'number' &&
+              body.retry_after > 0
+            ) {
+              bodyRetryAfterMs = Math.max(
+                0,
+                Math.round(body.retry_after * 1000)
+              );
+            }
+          } catch {}
+
+          let retryAfterMs = bodyRetryAfterMs || 0;
           if (retryAfterHeader) {
             const asNumber = Number(retryAfterHeader);
             if (!Number.isNaN(asNumber)) {
@@ -547,18 +619,16 @@ class ERLCClient {
           ? parsed
           : { code: 4001, message: 'Rate limited' };
 
-      const error = new Error(errorData.message || 'Rate limited');
-      error.code = errorData.code || 4001;
-      error.status = 429;
-      error.retryAfter = retryAfterMs;
-      error.statusText = response.statusText;
-      error.method = request?.method;
-      error.path = request?.path;
-      error.url = request?.url || response?.url;
-      if (rawText) {
-        error.responseBody = rawText.slice(0, 1024);
+      const err = PRCAPIError.fromResponse(
+        response,
+        errorData,
+        request,
+        rawText
+      );
+      if (!err.retryAfter) {
+        err.retryAfter = retryAfterMs;
       }
-      throw error;
+      throw err;
     }
 
     if (!response.ok) {
@@ -580,17 +650,7 @@ class ERLCClient {
               }`,
             };
 
-      const error = new Error(errorData.message || 'Unknown error');
-      error.code = errorData.code || 0;
-      error.status = response.status;
-      error.statusText = response.statusText;
-      error.method = request?.method;
-      error.path = request?.path;
-      error.url = request?.url || response?.url;
-      if (rawText) {
-        error.responseBody = rawText.slice(0, 1024);
-      }
-      throw error;
+      throw PRCAPIError.fromResponse(response, errorData, request, rawText);
     }
 
     try {
@@ -625,7 +685,13 @@ class ERLCClient {
     }
 
     if (this.cache) {
-      this.cache.instance.destroy();
+      try {
+        if (this.cache.store instanceof MemoryCache) {
+          this.cache.store.destroy();
+        } else if (this.cache.store.disconnect) {
+          this.cache.store.disconnect().catch(() => {});
+        }
+      } catch {}
     }
 
     if (this.rateLimiter) {
@@ -645,10 +711,64 @@ class ERLCClient {
           }
         : null,
       queue: this.queue ? this.queue.getStatus() : null,
-      cache: this.cache ? this.cache.instance.getStats() : null,
+      cache:
+        this.cache && this.cache.store instanceof MemoryCache
+          ? this.cache.store.getStats()
+          : null,
     };
 
     return status;
+  }
+
+  /**
+   * Clear the client cache (erlc.ts parity)
+   */
+  async clearCache() {
+    if (!this.cache) return;
+    try {
+      if (this.cache.store instanceof MemoryCache) {
+        this.cache.store.clear();
+      } else {
+        await this.cache.store.clear();
+      }
+    } catch {}
+  }
+
+  /**
+   * Get cache size (erlc.ts parity)
+   * @returns {Promise<number>}
+   */
+  async getCacheSize() {
+    if (!this.cache) return 0;
+    try {
+      if (this.cache.store instanceof MemoryCache) {
+        return this.cache.store.size();
+      }
+      return await this.cache.store.size();
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Get a cache entry directly (in-memory only)
+   * @param {string} key
+   */
+  getCacheEntry(key) {
+    if (!this.cache) return null;
+    if (!(this.cache.store instanceof MemoryCache)) return null;
+    const entry = this.cache.store.getRawEntry(key);
+    return entry ? entry.value : null;
+  }
+
+  /**
+   * Get cache keys (in-memory only)
+   * @returns {string[]}
+   */
+  getCacheKeys() {
+    if (!this.cache) return [];
+    if (!(this.cache.store instanceof MemoryCache)) return [];
+    return this.cache.store.getAllKeys();
   }
 }
 

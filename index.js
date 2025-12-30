@@ -9,11 +9,17 @@ const {
   createClient,
   getFriendlyErrorMessage,
 } = require('./client');
-const { EventType, isPrivateServerOfflineError } = require('./types');
+const {
+  EventType,
+  ErrorCode,
+  isPrivateServerOfflineError,
+} = require('./types');
 const { RateLimiter } = require('./rateLimiter');
 const { RequestQueue } = require('./queue');
 const { MemoryCache } = require('./cache');
 const { Subscription, getDefaultEventConfig } = require('./subscription');
+const { PRCAPIError } = require('./errors');
+const { PRCHelpers } = require('./helpers');
 
 /**
  * Create a new ERLC client with default configuration
@@ -64,6 +70,12 @@ function newClientWithCache(apiKey, ttl = 60000, options = {}) {
       staleIfError: true,
       maxItems: 1000,
       prefix: 'erlc:',
+      ...(options.cache && typeof options.cache === 'object'
+        ? {
+            redisUrl: options.cache.redisUrl,
+            redisKeyPrefix: options.cache.redisKeyPrefix,
+          }
+        : {}),
     },
   });
 }
@@ -75,11 +87,19 @@ function newClientWithCache(apiKey, ttl = 60000, options = {}) {
  * @param {number} [config.workers=1] - Number of queue workers
  * @param {number} [config.interval=1000] - Interval between requests
  * @param {number} [config.ttl=60000] - Cache TTL in milliseconds
+ * @param {string} [config.redisUrl] - Optional Redis URL (enables Redis cache)
+ * @param {string} [config.redisKeyPrefix] - Optional Redis key prefix
  * @param {ClientOptions} [options] - Additional client options
  * @returns {ERLCClient} New ERLC client instance with queue and cache
  */
 function newClientWithQueueAndCache(apiKey, config = {}, options = {}) {
-  const { workers = 1, interval = 1000, ttl = 60000 } = config;
+  const {
+    workers = 1,
+    interval = 1000,
+    ttl = 60000,
+    redisUrl,
+    redisKeyPrefix,
+  } = config;
 
   return createClient(apiKey, {
     ...options,
@@ -93,6 +113,8 @@ function newClientWithQueueAndCache(apiKey, config = {}, options = {}) {
       staleIfError: true,
       maxItems: 1000,
       prefix: 'erlc:',
+      ...(redisUrl ? { redisUrl } : {}),
+      ...(redisKeyPrefix ? { redisKeyPrefix } : {}),
     },
   });
 }
@@ -108,7 +130,11 @@ module.exports = {
   getFriendlyErrorMessage,
   isPrivateServerOfflineError,
   EventType,
+  ErrorCode,
   getDefaultEventConfig,
+
+  PRCAPIError,
+  PRCHelpers,
 
   RateLimiter,
   RequestQueue,

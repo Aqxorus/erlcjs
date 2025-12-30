@@ -68,14 +68,23 @@
  * @property {boolean} staleIfError - Determines if stale items should be returned when errors occur
  * @property {number} [maxItems] - Maximum number of items to cache
  * @property {string} [prefix] - Prefix for cache keys
+ * @property {string} [redisUrl] - Optional Redis URL for Redis cache backend
+ * @property {string} [redisKeyPrefix] - Optional Redis key prefix (e.g. 'erlc:')
  */
 
 /**
  * @typedef {Object} ClientOptions
  * @property {number} [timeout] - Request timeout in milliseconds
  * @property {string} [baseURL] - Custom base URL for the API
+ * @property {string} [globalKey] - Optional global key (sent as Authorization)
  * @property {RequestQueueConfig} [requestQueue] - Request queue configuration
  * @property {CacheConfig} [cache] - Cache configuration
+ */
+
+/**
+ * @typedef {Object} MethodOptions
+ * @property {boolean} [cache] - Enable/disable cache for this call
+ * @property {number} [cacheMaxAge] - Override cache TTL (ms) for this call
  */
 
 /**
@@ -94,6 +103,27 @@ const EventType = {
   MODCALLS: 'modcalls',
   JOINS: 'joins',
   VEHICLES: 'vehicles',
+};
+
+/**
+ * Enumeration of PRC API error codes.
+ */
+const ErrorCode = {
+  UNKNOWN: 0,
+  ROBLOX_ERROR: 1001,
+  INTERNAL_ERROR: 1002,
+  NO_SERVER_KEY: 2000,
+  INVALID_SERVER_KEY_FORMAT: 2001,
+  INVALID_SERVER_KEY: 2002,
+  INVALID_GLOBAL_KEY: 2003,
+  BANNED_SERVER_KEY: 2004,
+  INVALID_COMMAND: 3001,
+  SERVER_OFFLINE: 3002,
+  RATE_LIMITED: 4001,
+  RESTRICTED_COMMAND: 4002,
+  PROHIBITED_MESSAGE: 4003,
+  RESTRICTED_RESOURCE: 9998,
+  OUTDATED_MODULE: 9999,
 };
 
 /**
@@ -217,6 +247,7 @@ function isPrivateServerOfflineError(err) {
 
 module.exports = {
   EventType,
+  ErrorCode,
   getFriendlyErrorMessage,
   isPrivateServerOfflineError,
 };

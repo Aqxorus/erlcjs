@@ -46,6 +46,35 @@ class MemoryCache {
   }
 
   /**
+   * Get cache entry including stale value (expired) when requested.
+   * @param {string} key
+   * @param {{allowStale?: boolean}} [options]
+   * @returns {{value: *, found: boolean, isStale: boolean}}
+   */
+  getWithMeta(key, options = {}) {
+    const item = this.items.get(key);
+    if (!item) {
+      this.stats.misses++;
+      return { value: null, found: false, isStale: false };
+    }
+
+    const expired = item.expiration && Date.now() > item.expiration.getTime();
+    if (expired && !options.allowStale) {
+      this.items.delete(key);
+      this.stats.misses++;
+      return { value: null, found: false, isStale: false };
+    }
+
+    if (!expired) {
+      this.stats.hits++;
+      return { value: item.value, found: true, isStale: false };
+    }
+
+    this.stats.hits++;
+    return { value: item.value, found: true, isStale: true };
+  }
+
+  /**
    * Set a value in the cache
    * @param {string} key - Cache key
    * @param {*} value - Value to cache
@@ -100,6 +129,31 @@ class MemoryCache {
       size: this.items.size,
       hitRate: this.stats.hits / (this.stats.hits + this.stats.misses) || 0,
     };
+  }
+
+  /**
+   * Cache size helper (erlc.ts parity).
+   * @returns {number}
+   */
+  size() {
+    return this.items.size;
+  }
+
+  /**
+   * Get raw entry for debugging.
+   * @param {string} key
+   * @returns {{value: *, expiration: (Date|null), createdAt: Date}|null}
+   */
+  getRawEntry(key) {
+    return this.items.get(key) || null;
+  }
+
+  /**
+   * Get all keys (debugging).
+   * @returns {string[]}
+   */
+  getAllKeys() {
+    return Array.from(this.items.keys());
   }
 
   /**
@@ -158,4 +212,116 @@ class MemoryCache {
   }
 }
 
-module.exports = { MemoryCache };
+class RedisCache {
+  /**
+   * @param {{url: string, keyPrefix?: string}} options
+   */
+  constructor(options) {
+    this.url = options?.url;
+    this.keyPrefix = options?.keyPrefix;
+    this._clientPromise = null;
+  }
+
+  _fullKey(rawKey) {
+    return this.keyPrefix ? `${this.keyPrefix}${rawKey}` : rawKey;
+  }
+
+  async _getClient() {
+    if (this._clientPromise) return this._clientPromise;
+
+    this._clientPromise = (async () => {
+      let redis;
+      try {
+        redis = await import('redis');
+      } catch (e) {
+        throw new Error(
+          "Redis cache configured but 'redis' dependency is not installed. Install it with `pnpm add redis`."
+        );
+      }
+
+      const client = redis.createClient({ url: this.url });
+      client.on('error', () => {});
+      await client.connect();
+      return client;
+    })();
+
+    return this._clientPromise;
+  }
+
+  async get(rawKey) {
+    const client = await this._getClient();
+    const key = this._fullKey(rawKey);
+    const data = await client.get(key);
+    if (!data) return { value: null, found: false, isStale: false };
+    try {
+      return { value: JSON.parse(data), found: true, isStale: false };
+    } catch {
+      return { value: null, found: false, isStale: false };
+    }
+  }
+
+  async set(rawKey, value, ttlMs) {
+    const client = await this._getClient();
+    const key = this._fullKey(rawKey);
+    const ttlSeconds = Math.max(1, Math.ceil((Number(ttlMs) || 0) / 1000));
+    await client.setEx(key, ttlSeconds, JSON.stringify(value));
+  }
+
+  async delete(rawKey) {
+    const client = await this._getClient();
+    const key = this._fullKey(rawKey);
+    await client.del(key);
+  }
+
+  async clear() {
+    const client = await this._getClient();
+
+    if (!this.keyPrefix) {
+      await client.flushDb();
+      return;
+    }
+
+    const pattern = `${this.keyPrefix}*`;
+    const keys = [];
+    for await (const key of client.scanIterator({
+      MATCH: pattern,
+      COUNT: 200,
+    })) {
+      keys.push(key);
+    }
+    if (keys.length > 0) {
+      await client.del(keys);
+    }
+  }
+
+  async size() {
+    const client = await this._getClient();
+    if (!this.keyPrefix) {
+      const keys = await client.keys('*');
+      return keys.length;
+    }
+
+    const pattern = `${this.keyPrefix}*`;
+    let count = 0;
+    for await (const _ of client.scanIterator({ MATCH: pattern, COUNT: 200 })) {
+      count++;
+    }
+    return count;
+  }
+
+  getRawEntry() {
+    throw new Error('Cannot get raw entry from Redis cache');
+  }
+
+  getAllKeys() {
+    throw new Error('Cannot get all keys from Redis cache');
+  }
+
+  async disconnect() {
+    if (!this._clientPromise) return;
+    const client = await this._clientPromise;
+    await client.disconnect();
+  }
+}
+
+module.exports = { MemoryCache, RedisCache };
