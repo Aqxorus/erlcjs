@@ -63,8 +63,8 @@ class RequestQueue {
 
         const result = await request.execute();
         request.resolve(result);
-      } catch (e) {
-        request.reject(e);
+      } catch (err) {
+        request.reject(err);
       }
 
       if (this.interval > 0) {

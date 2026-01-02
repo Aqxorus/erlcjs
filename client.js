@@ -6,7 +6,7 @@
 const { RateLimiter } = require('./rateLimiter');
 const { RequestQueue } = require('./queue');
 const { MemoryCache, RedisCache } = require('./cache');
-const { Subscription, getDefaultEventConfig } = require('./subscription');
+const { Subscription } = require('./subscription');
 const { getFriendlyErrorMessage } = require('./types');
 const { PRCAPIError } = require('./errors');
 const Sentry = require('@sentry/node');
@@ -236,11 +236,11 @@ class ERLCClient {
 
     try {
       return await run();
-    } catch (e) {
+    } catch (err) {
       if (this.cache && this.cache.staleIfError && staleValue !== null) {
         return staleValue;
       }
-      throw e;
+      throw err;
     }
   }
 
@@ -454,23 +454,23 @@ class ERLCClient {
         }
 
         return response;
-      } catch (e) {
-        lastError = e;
+      } catch (err) {
+        lastError = err;
 
-        if (attempt < maxRetries && this.isRetryableError(e)) {
+        if (attempt < maxRetries && this.isRetryableError(err)) {
           const delay = this.calculateBackoffDelay(attempt, baseDelay);
 
           console.warn(
             `[ERLC Client] Request failed (attempt ${attempt + 1}/${
               maxRetries + 1
-            }): ${e.message}. Retrying in ${Math.round(delay)}ms...`
+            }): ${err.message}. Retrying in ${Math.round(delay)}ms...`
           );
           await this.sleep(delay);
           continue;
         }
 
         try {
-          Sentry.captureException(e, {
+          Sentry.captureException(err, {
             tags: { module: 'ERLCClient', op: 'http.client' },
             extra: {
               method,
@@ -478,14 +478,14 @@ class ERLCClient {
               url,
               attempt,
               maxRetries,
-              message: e?.message,
-              name: e?.name,
-              code: e?.code,
+              message: err?.message,
+              name: err?.name,
+              code: err?.code,
             },
           });
         } catch {}
 
-        throw e;
+        throw err;
       }
     }
 
@@ -655,7 +655,7 @@ class ERLCClient {
 
     try {
       return await response.json();
-    } catch (e) {
+    } catch (_err) {
       const error = new Error('Failed to parse response JSON');
       error.status = response.status;
       error.statusText = response.statusText;
@@ -689,9 +689,9 @@ class ERLCClient {
         if (this.cache.store instanceof MemoryCache) {
           this.cache.store.destroy();
         } else if (this.cache.store.disconnect) {
-          this.cache.store.disconnect().catch(() => {});
+          this.cache.store.disconnect().catch(() => undefined);
         }
-      } catch {}
+      } catch (_err) {}
     }
 
     if (this.rateLimiter) {

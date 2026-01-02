@@ -220,6 +220,9 @@ class RedisCache {
     this.url = options?.url;
     this.keyPrefix = options?.keyPrefix;
     this._clientPromise = null;
+    this._client = null;
+    this.connectionState = this.url ? 'idle' : 'disabled';
+    this.lastError = null;
   }
 
   _fullKey(rawKey) {
@@ -233,19 +236,53 @@ class RedisCache {
       let redis;
       try {
         redis = await import('redis');
-      } catch (e) {
+      } catch (err) {
+        this.connectionState = 'error';
+        this.lastError = err;
         throw new Error(
           "Redis cache configured but 'redis' dependency is not installed. Install it with `pnpm add redis`."
         );
       }
 
+      this.connectionState = 'connecting';
+      this.lastError = null;
       const client = redis.createClient({ url: this.url });
-      client.on('error', () => {});
+      this._client = client;
+
+      client.on('ready', () => {
+        this.connectionState = 'connected';
+      });
+      client.on('end', () => {
+        if (this.connectionState !== 'disabled') {
+          this.connectionState = 'disconnected';
+        }
+      });
+      client.on('reconnecting', () => {
+        this.connectionState = 'connecting';
+      });
+      client.on('error', (e) => {
+        this.lastError = e;
+        this.connectionState = 'error';
+      });
+
       await client.connect();
+      this.connectionState = client.isReady ? 'connected' : 'connecting';
       return client;
     })();
 
     return this._clientPromise;
+  }
+
+  getConnectionStatus() {
+    return {
+      enabled: Boolean(this.url),
+      state: this.connectionState,
+      isOpen: this._client ? Boolean(this._client.isOpen) : null,
+      isReady: this._client ? Boolean(this._client.isReady) : null,
+      error: this.lastError
+        ? String(this.lastError?.message || this.lastError)
+        : null,
+    };
   }
 
   async get(rawKey) {
@@ -321,6 +358,7 @@ class RedisCache {
     if (!this._clientPromise) return;
     const client = await this._clientPromise;
     await client.disconnect();
+    this.connectionState = 'disconnected';
   }
 }
 

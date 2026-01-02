@@ -15,9 +15,10 @@ A powerful, feature-rich JavaScript client for the Emergency Response: Liberty C
 - [Rate Limiting](#rate-limiting)
 - [Request Queueing](#request-queueing)
 - [Caching](#caching)
+- [Diagnostics](#diagnostics)
+- [Helpers](#helpers)
 - [Best Practices](#best-practices)
 - [Timeouts](#timeouts)
-- [Best Practices](#best-practices)
 - [Types](#types)
 - [Contributing](#contributing)
 - [License](#license)
@@ -27,12 +28,15 @@ A powerful, feature-rich JavaScript client for the Emergency Response: Liberty C
 - 🌟 Complete ERLC API coverage with comprehensive type definitions
 - 📡 Real-time event system with type-safe handlers
 - 🚦 Smart rate limiting with automatic backoff
-- 📱 Automatic request queueing and batching
-- 🔄 Built-in retry mechanism with configurable policies
-- ⚡ High-performance caching system
+- 📱 Automatic request queueing
+- 🔄 Built-in retry mechanism with exponential backoff (including 5xx + transient network errors)
+- ⚡ High-performance caching system (in-memory or Redis)
+- 🧠 Per-call cache controls (disable cache or override TTL)
+- 🧰 Convenience utilities (`PRCHelpers`) and rich error type (`PRCAPIError`)
+- 📊 Built-in diagnostics (`getStatus()`, cache helpers)
 - 💪 Fully async/await compatible
-- ⌛ Timeout support for requests
-- 🎯 Zero external dependencies for API functionality
+- ⌛ Timeout support for requests (per-attempt)
+- 🧭 Optional Sentry tracing for HTTP calls (if Sentry is initialized)
 
 ## Installation
 
@@ -72,7 +76,6 @@ async function main() {
       [EventType.PLAYERS, EventType.COMMANDS],
       {
         pollInterval: 1000,
-        batchEvents: true,
         logErrors: true,
       }
     );
@@ -168,6 +171,12 @@ const client = createClient('your-api-key', {
   timeout: 30000,
   baseURL: 'https://api.policeroleplay.community/v1',
 
+  // Optional: send an Authorization header in addition to Server-Key
+  globalKey: 'your-global-key',
+
+  // Optional: keep-alive is enabled by default (set to false to force Connection: close)
+  keepAlive: true,
+
   // Request queueing
   requestQueue: {
     workers: 2,
@@ -181,6 +190,10 @@ const client = createClient('your-api-key', {
     staleIfError: true,
     maxItems: 1000,
     prefix: 'erlc:',
+
+    // Optional: use Redis instead of in-memory cache
+    // redisUrl: 'redis://localhost:6379',
+    // redisKeyPrefix: 'hnzrp:',
   },
 });
 ```
@@ -191,7 +204,7 @@ The `timeout` option is applied per HTTP attempt. When a request fails with a re
 
 - Default: `timeout` = 10000 ms unless overridden
 - Recommended: set `timeout` to 15000–30000 ms for endpoints that can be slow under load
-- Retries: up to 3 attempts by default, with jittered exponential backoff
+- Retries: up to 4 total attempts by default (1 initial + 3 retries), with jittered exponential backoff
 
 Example:
 
@@ -204,6 +217,16 @@ const client = newClientWithQueueAndCache(
 ```
 
 ## API Methods
+
+Most GET-style methods accept an optional `options` object:
+
+```javascript
+// Disable cache for a single request
+const players = await client.getPlayers({ cache: false });
+
+// Override cache TTL (ms) for a single request
+const server = await client.getServer({ cacheMaxAge: 5000 });
+```
 
 ### Player Management
 
@@ -255,6 +278,12 @@ const queueInfo = await client.getQueue();
 
 // Get ban information
 const banInfo = await client.getBans();
+
+// Get staff information
+const staff = await client.getStaff();
+
+// Alias for getServer() (erlc.ts parity)
+const status = await client.getServerStatus();
 ```
 
 ## Real-time Events
@@ -266,11 +295,11 @@ const subscription = client.subscribe(
   [EventType.PLAYERS, EventType.COMMANDS, EventType.KILLS],
   {
     pollInterval: 1000,
-    bufferSize: 200,
     retryOnError: true,
-    batchEvents: true,
-    batchWindow: 100,
     logErrors: true,
+    errorHandler: (err) => {
+      console.error('Subscription error:', err);
+    },
   }
 );
 
@@ -292,17 +321,16 @@ subscription.start();
 
 ### Event Configuration
 
+Note: `bufferSize`, `batchEvents`, `batchWindow`, and `timeFormat` are present in the config type but are not currently used by the subscription implementation.
+
 ```javascript
 const config = {
   pollInterval: 1000, // Poll every second
-  bufferSize: 200, // Buffer size for events
   retryOnError: true, // Retry on errors
   retryInterval: 5000, // Retry after 5 seconds
-  batchEvents: true, // Batch multiple events
-  batchWindow: 100, // Batch window in ms
   logErrors: true, // Log errors to console
   includeInitialState: true, // Include current state on start
-  timeFormat: 'iso', // Time format for events
+  timeFormat: 'ISO', // Reserved for future formatting
 };
 
 const subscription = client.subscribeWithConfig(
@@ -365,6 +393,39 @@ try {
 }
 ```
 
+### Structured Errors (`PRCAPIError`)
+
+The client throws `PRCAPIError` for non-2xx API responses. It includes useful context like HTTP status, `retryAfter` (when rate limited), and request details.
+
+```javascript
+const {
+  PRCAPIError,
+  ErrorCode,
+  isPrivateServerOfflineError,
+} = require('./src/API');
+
+try {
+  await client.getPlayers();
+} catch (error) {
+  if (error instanceof PRCAPIError) {
+    if (error.isRateLimit) {
+      console.log('Rate limited. Retry after (ms):', error.retryAfter);
+    }
+
+    if (
+      error.code === ErrorCode.SERVER_OFFLINE ||
+      isPrivateServerOfflineError(error)
+    ) {
+      console.log('Server is offline (no players).');
+    }
+
+    console.error('Request failed:', error.status, error.message);
+  } else {
+    console.error('Unknown error:', error);
+  }
+}
+```
+
 ### Common Error Codes
 
 - `1001`: Server communication error
@@ -420,6 +481,57 @@ const client = newClientWithCache(
 // Check cache statistics
 const status = client.getStatus();
 console.log('Cache stats:', status.cache);
+```
+
+### Redis Cache Backend
+
+To use Redis instead of in-memory cache, pass `redisUrl` (and optionally `redisKeyPrefix`) in the cache config:
+
+```javascript
+const { createClient } = require('./src/API');
+
+const client = createClient('your-api-key', {
+  cache: {
+    enabled: true,
+    ttl: 60000,
+    staleIfError: true,
+    prefix: 'erlc:',
+    redisUrl: 'redis://localhost:6379',
+    redisKeyPrefix: 'hnzrp:',
+  },
+});
+```
+
+### Stale-If-Error
+
+If `staleIfError: true` is enabled and a cached value is expired, the client will return the stale value when the network request fails.
+
+## Diagnostics
+
+The client exposes basic internal status and cache helpers:
+
+```javascript
+console.log(client.getStatus());
+
+await client.clearCache();
+console.log('Cache size:', await client.getCacheSize());
+
+// In-memory cache only
+console.log('Cache keys:', client.getCacheKeys());
+console.log('One entry:', client.getCacheEntry('erlc:/server/players'));
+```
+
+## Helpers
+
+`PRCHelpers` provides convenient, higher-level operations built on top of the client:
+
+```javascript
+const { PRCHelpers } = require('./src/API');
+
+const helpers = new PRCHelpers(client);
+const staffPlayers = await helpers.getStaffPlayers();
+const isFull = await helpers.isServerFull();
+await helpers.sendPM('PlayerName', 'Hello!');
 ```
 
 ## Best Practices

@@ -79,17 +79,17 @@ class Subscription {
 
       this.pollInFlight = true;
       this.poll()
-        .catch((e) => {
+        .catch((_err) => {
           if (this.config.retryOnError) {
             const retryMs = Math.max(0, Number(this.config.retryInterval) || 0);
             this.nextAllowedPollAt = Date.now() + retryMs;
           }
 
           if (this.config.logErrors) {
-            console.error('Event polling error:', e);
+            console.error('Event polling error:', _err);
           }
           if (this.config.errorHandler) {
-            this.config.errorHandler(e);
+            this.config.errorHandler(_err);
           }
         })
         .finally(() => {
@@ -134,41 +134,51 @@ class Subscription {
             }
             break;
           case EventType.COMMANDS:
-            const commandLogs = await this.client.getCommandLogs();
-            if (commandLogs && commandLogs.length > 0) {
-              this.lastState.commandTime = commandLogs[0].Timestamp;
+            {
+              const commandLogs = await this.client.getCommandLogs();
+              if (commandLogs && commandLogs.length > 0) {
+                this.lastState.commandTime = commandLogs[0].Timestamp;
+              }
             }
             break;
           case EventType.MODCALLS:
-            const modCalls = await this.client.getModCalls();
-            if (modCalls && modCalls.length > 0) {
-              this.lastState.modCallTime = modCalls[0].Timestamp;
+            {
+              const modCalls = await this.client.getModCalls();
+              if (modCalls && modCalls.length > 0) {
+                this.lastState.modCallTime = modCalls[0].Timestamp;
+              }
             }
             break;
           case EventType.KILLS:
-            const killLogs = await this.client.getKillLogs();
-            if (killLogs && killLogs.length > 0) {
-              this.lastState.killTime = killLogs[0].Timestamp;
+            {
+              const killLogs = await this.client.getKillLogs();
+              if (killLogs && killLogs.length > 0) {
+                this.lastState.killTime = killLogs[0].Timestamp;
+              }
             }
             break;
           case EventType.JOINS:
-            const joinLogs = await this.client.getJoinLogs();
-            if (joinLogs && joinLogs.length > 0) {
-              this.lastState.joinTime = joinLogs[0].Timestamp;
+            {
+              const joinLogs = await this.client.getJoinLogs();
+              if (joinLogs && joinLogs.length > 0) {
+                this.lastState.joinTime = joinLogs[0].Timestamp;
+              }
             }
             break;
           case EventType.VEHICLES:
-            const vehicles = await this.client.getVehicles();
-            this.lastState.vehicleSet = new Set(
-              vehicles.map((v) => `${v.Owner}:${v.Name}`)
-            );
+            {
+              const vehicles = await this.client.getVehicles();
+              this.lastState.vehicleSet = new Set(
+                vehicles.map((v) => `${v.Owner}:${v.Name}`)
+              );
+            }
             break;
         }
       }
       this.lastState.initialized = true;
-    } catch (e) {
+    } catch (err) {
       if (this.config.logErrors) {
-        console.error('Failed to initialize state:', e);
+        console.error('Failed to initialize state:', err);
       }
     }
   }
@@ -181,19 +191,15 @@ class Subscription {
 
     const events = [];
 
-    try {
-      for (const eventType of this.eventTypes) {
-        const event = await this.checkForChanges(eventType);
-        if (event) {
-          events.push(event);
-        }
+    for (const eventType of this.eventTypes) {
+      const event = await this.checkForChanges(eventType);
+      if (event) {
+        events.push(event);
       }
+    }
 
-      for (const event of events) {
-        this.processEvent(event);
-      }
-    } catch (e) {
-      throw e;
+    for (const event of events) {
+      this.processEvent(event);
     }
   }
 
