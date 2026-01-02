@@ -1,9 +1,4 @@
 /**
- * ERLC API Types and Interfaces
- * Based on the bmrgcorp/erlcgo implementation
- */
-
-/**
  * @typedef {Object} ERLCServerPlayer
  * @property {string} Player - The username of the player
  * @property {string} Permission - The player's permission level (e.g., "Admin", "Moderator", "Player")

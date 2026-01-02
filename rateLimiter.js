@@ -1,8 +1,3 @@
-/**
- * Rate Limiter for ERLC API
- * Manages rate limits for different buckets with automatic backoff
- */
-
 class RateLimiter {
   constructor() {
     /** @type {Map<string, RateLimit>} */

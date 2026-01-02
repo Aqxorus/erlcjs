@@ -1,8 +1,3 @@
-/**
- * ERLC API Client
- * Main client class for interacting with the Emergency Response: Liberty County API
- */
-
 const { RateLimiter } = require('./rateLimiter');
 const { RequestQueue } = require('./queue');
 const { MemoryCache, RedisCache } = require('./cache');

@@ -1,8 +1,3 @@
-/**
- * Event Subscription System for ERLC API
- * Provides real-time event monitoring with configurable polling
- */
-
 const { EventType } = require('./types');
 
 /**

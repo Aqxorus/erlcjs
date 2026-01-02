@@ -1,8 +1,3 @@
-/**
- * Memory Cache implementation for ERLC API
- * Provides caching with TTL support and memory management
- */
-
 class MemoryCache {
   /**
    * @param {number} maxItems - Maximum number of items to cache

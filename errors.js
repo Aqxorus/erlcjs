@@ -1,8 +1,3 @@
-/**
- * PRC API Error utilities
- * Provides a structured error type similar to erlc.ts
- */
-
 const { ErrorCode, isPrivateServerOfflineError } = require('./types');
 
 class PRCAPIError extends Error {

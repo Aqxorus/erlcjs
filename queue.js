@@ -1,8 +1,3 @@
-/**
- * Request Queue for ERLC API
- * Manages queued API requests to prevent rate limit issues
- */
-
 class RequestQueue {
   /**
    * @param {number} workers - Number of workers to process requests

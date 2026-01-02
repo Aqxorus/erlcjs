@@ -1,8 +1,3 @@
-/**
- * Helper utilities for interacting with the ERLCClient.
- * Mirrors the ergonomics provided by erlc.ts's PRCHelpers.
- */
-
 class PRCHelpers {
   /**
    * @param {import('./client').ERLCClient} client

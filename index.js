@@ -1,9 +1,3 @@
-/**
- * ERLC API Wrapper
- * A comprehensive JavaScript wrapper for the Emergency Response: Liberty County API
- * Based on the bmrgcorp/erlcgo implementation
- */
-
 const {
   ERLCClient,
   createClient,
