@@ -1,30 +1,70 @@
-const { EventType } = require('./types');
+import { EventType } from './types.js';
 
-/**
- * Default event configuration
- * @returns {EventConfig}
- */
-function getDefaultEventConfig() {
+interface EventConfig {
+  pollInterval?: number;
+  bufferSize?: number;
+  retryOnError?: boolean;
+  retryInterval?: number;
+  includeInitialState?: boolean;
+  batchEvents?: boolean;
+  batchWindow?: number;
+  logErrors?: boolean;
+  timeFormat?: string;
+  filterFunc?: (event: any) => boolean;
+  errorHandler?: (error: Error) => void;
+}
+
+function getDefaultEventConfig(): EventConfig {
   return {
-    pollInterval: 2000, // 2 seconds
+    pollInterval: 2000,
     bufferSize: 100,
     retryOnError: true,
-    retryInterval: 5000, // 5 seconds
+    retryInterval: 5000,
     includeInitialState: false,
     batchEvents: false,
-    batchWindow: 100, // 100 ms
+    batchWindow: 100,
     logErrors: false,
     timeFormat: 'ISO',
   };
 }
 
+interface HandlerRegistration {
+  playerHandler?: (data: any) => void;
+  commandHandler?: (data: any) => void;
+  modCallHandler?: (data: any) => void;
+  killHandler?: (data: any) => void;
+  joinHandler?: (data: any) => void;
+  vehicleHandler?: (data: any) => void;
+}
+
+interface SubscriptionState {
+  players: Set<string>;
+  commandTime: number;
+  modCallTime: number;
+  killTime: number;
+  joinTime: number;
+  vehicleSet: Set<string>;
+  initialized: boolean;
+}
+
+interface Event {
+  type: string;
+  data: any;
+}
+
 class Subscription {
-  /**
-   * @param {ERLCClient} client - The ERLC client instance
-   * @param {EventConfig} config - Event configuration
-   * @param {string[]} eventTypes - Event types to subscribe to
-   */
-  constructor(client, config, eventTypes) {
+  private client: any;
+  private config: EventConfig;
+  private eventTypes: string[];
+  private handlers: HandlerRegistration;
+  private running: boolean;
+  private pollInterval: NodeJS.Timeout | null;
+  private eventQueue: Event[];
+  private pollInFlight: boolean;
+  private nextAllowedPollAt: number;
+  private lastState: SubscriptionState;
+
+  constructor(client: any, config: EventConfig, eventTypes: string[]) {
     this.client = client;
     this.config = { ...getDefaultEventConfig(), ...config };
     this.eventTypes = eventTypes;
@@ -47,18 +87,11 @@ class Subscription {
     };
   }
 
-  /**
-   * Register event handlers
-   * @param {HandlerRegistration} handlers - Event handlers
-   */
-  handle(handlers) {
+  handle(handlers: HandlerRegistration): void {
     this.handlers = { ...this.handlers, ...handlers };
   }
 
-  /**
-   * Start the subscription
-   */
-  async start() {
+  async start(): Promise<void> {
     if (this.running) return;
 
     this.running = true;
@@ -93,10 +126,7 @@ class Subscription {
     }, this.config.pollInterval);
   }
 
-  /**
-   * Stop the subscription
-   */
-  stop() {
+  stop(): void {
     this.running = false;
 
     this.pollInFlight = false;
@@ -108,24 +138,20 @@ class Subscription {
     }
   }
 
-  /**
-   * Close the subscription (alias for stop)
-   */
-  close() {
+  close(): void {
     this.stop();
   }
 
-  /**
-   * Initialize state with current data
-   */
-  async initializeState() {
+  async initializeState(): Promise<void> {
     try {
       for (const eventType of this.eventTypes) {
         switch (eventType) {
           case EventType.PLAYERS:
             if (this.handlers.playerHandler) {
               const players = await this.client.getPlayers();
-              this.lastState.players = new Set(players.map((p) => p.Player));
+              this.lastState.players = new Set(
+                players.map((p: any) => p.Player)
+              );
             }
             break;
           case EventType.COMMANDS:
@@ -164,7 +190,7 @@ class Subscription {
             {
               const vehicles = await this.client.getVehicles();
               this.lastState.vehicleSet = new Set(
-                vehicles.map((v) => `${v.Owner}:${v.Name}`)
+                vehicles.map((v: any) => `${v.Owner}:${v.Name}`)
               );
             }
             break;
@@ -178,13 +204,10 @@ class Subscription {
     }
   }
 
-  /**
-   * Poll for new events
-   */
-  async poll() {
+  async poll(): Promise<void> {
     if (!this.running) return;
 
-    const events = [];
+    const events: Event[] = [];
 
     for (const eventType of this.eventTypes) {
       const event = await this.checkForChanges(eventType);
@@ -198,12 +221,7 @@ class Subscription {
     }
   }
 
-  /**
-   * Check for changes in a specific event type
-   * @param {string} eventType - The event type to check
-   * @returns {Promise<Event|null>} The event if there were changes
-   */
-  async checkForChanges(eventType) {
+  async checkForChanges(eventType: string): Promise<Event | null> {
     switch (eventType) {
       case EventType.PLAYERS:
         return this.checkPlayerChanges();
@@ -222,16 +240,12 @@ class Subscription {
     }
   }
 
-  /**
-   * Check for player changes
-   * @returns {Promise<Event|null>}
-   */
-  async checkPlayerChanges() {
+  async checkPlayerChanges(): Promise<Event | null> {
     const players = await this.client.getPlayers();
-    const currentSet = new Set(players.map((p) => p.Player));
+    const currentSet = new Set<string>(players.map((p: any) => p.Player));
     const oldSet = this.lastState.players;
 
-    const changes = [];
+    const changes: any[] = [];
 
     for (const player of players) {
       if (!oldSet.has(player.Player)) {
@@ -261,11 +275,7 @@ class Subscription {
       : null;
   }
 
-  /**
-   * Check for command changes
-   * @returns {Promise<Event|null>}
-   */
-  async checkCommandChanges() {
+  async checkCommandChanges(): Promise<Event | null> {
     const logs = await this.client.getCommandLogs();
     if (!logs || logs.length === 0) return null;
 
@@ -275,9 +285,10 @@ class Subscription {
       return {
         type: EventType.COMMANDS,
         data: logs.filter(
-          (log) =>
+          (log: any) =>
             log.Timestamp >
-            this.lastState.commandTime - this.config.pollInterval / 1000
+            this.lastState.commandTime -
+              (this.config.pollInterval || 2000) / 1000
         ),
       };
     }
@@ -285,11 +296,7 @@ class Subscription {
     return null;
   }
 
-  /**
-   * Check for mod call changes
-   * @returns {Promise<Event|null>}
-   */
-  async checkModCallChanges() {
+  async checkModCallChanges(): Promise<Event | null> {
     const logs = await this.client.getModCalls();
     if (!logs || logs.length === 0) return null;
 
@@ -299,9 +306,10 @@ class Subscription {
       return {
         type: EventType.MODCALLS,
         data: logs.filter(
-          (log) =>
+          (log: any) =>
             log.Timestamp >
-            this.lastState.modCallTime - this.config.pollInterval / 1000
+            this.lastState.modCallTime -
+              (this.config.pollInterval || 2000) / 1000
         ),
       };
     }
@@ -309,11 +317,7 @@ class Subscription {
     return null;
   }
 
-  /**
-   * Check for kill changes
-   * @returns {Promise<Event|null>}
-   */
-  async checkKillChanges() {
+  async checkKillChanges(): Promise<Event | null> {
     const logs = await this.client.getKillLogs();
     if (!logs || logs.length === 0) return null;
 
@@ -323,9 +327,9 @@ class Subscription {
       return {
         type: EventType.KILLS,
         data: logs.filter(
-          (log) =>
+          (log: any) =>
             log.Timestamp >
-            this.lastState.killTime - this.config.pollInterval / 1000
+            this.lastState.killTime - (this.config.pollInterval || 2000) / 1000
         ),
       };
     }
@@ -333,11 +337,7 @@ class Subscription {
     return null;
   }
 
-  /**
-   * Check for join changes
-   * @returns {Promise<Event|null>}
-   */
-  async checkJoinChanges() {
+  async checkJoinChanges(): Promise<Event | null> {
     const logs = await this.client.getJoinLogs();
     if (!logs || logs.length === 0) return null;
 
@@ -347,9 +347,9 @@ class Subscription {
       return {
         type: EventType.JOINS,
         data: logs.filter(
-          (log) =>
+          (log: any) =>
             log.Timestamp >
-            this.lastState.joinTime - this.config.pollInterval / 1000
+            this.lastState.joinTime - (this.config.pollInterval || 2000) / 1000
         ),
       };
     }
@@ -357,16 +357,14 @@ class Subscription {
     return null;
   }
 
-  /**
-   * Check for vehicle changes
-   * @returns {Promise<Event|null>}
-   */
-  async checkVehicleChanges() {
+  async checkVehicleChanges(): Promise<Event | null> {
     const vehicles = await this.client.getVehicles();
-    const currentSet = new Set(vehicles.map((v) => `${v.Owner}:${v.Name}`));
+    const currentSet = new Set<string>(
+      vehicles.map((v: any) => `${v.Owner}:${v.Name}`)
+    );
     const oldSet = this.lastState.vehicleSet;
 
-    const newVehicles = vehicles.filter((v) => {
+    const newVehicles = vehicles.filter((v: any) => {
       const key = `${v.Owner}:${v.Name}`;
       return !oldSet.has(key);
     });
@@ -381,11 +379,7 @@ class Subscription {
       : null;
   }
 
-  /**
-   * Process an event through handlers
-   * @param {Event} event - The event to process
-   */
-  processEvent(event) {
+  processEvent(event: Event): void {
     if (this.config.filterFunc && !this.config.filterFunc(event)) {
       return;
     }
@@ -425,4 +419,4 @@ class Subscription {
   }
 }
 
-module.exports = { Subscription, getDefaultEventConfig };
+export { Subscription, getDefaultEventConfig };

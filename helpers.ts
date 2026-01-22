@@ -1,18 +1,47 @@
-class PRCHelpers {
-  /**
-   * @param {import('./client').ERLCClient} client
-   */
-  constructor(client) {
+import type { ERLCClient } from './client.js';
+import type {
+  ERLCServerPlayer,
+  ERLCCommandLog,
+  ERLCKillLog,
+  ERLCJoinLog,
+  ERLCModCallLog,
+} from './types.js';
+
+interface PlayerFormat {
+  Name: string;
+  ID: string;
+}
+
+interface ServerStats {
+  current: {
+    players: number;
+    maxPlayers: number;
+    name: string;
+    owner: string;
+  };
+  recent: {
+    joins: number;
+    kills: number;
+    commands: number;
+    modCalls: number;
+    uniquePlayers: number;
+  };
+}
+
+export class PRCHelpers {
+  private client: any;
+
+  constructor(client: ERLCClient | any) {
     this.client = client;
   }
 
-  async findPlayer(nameOrId) {
+  async findPlayer(nameOrId: string): Promise<ERLCServerPlayer | null> {
     const players = await this.client.getPlayers();
     const lowerQuery = String(nameOrId || '').toLowerCase();
     if (!lowerQuery) return null;
 
     return (
-      players.find((p) =>
+      players.find((p: ERLCServerPlayer) =>
         String(p.Player || '')
           .toLowerCase()
           .includes(lowerQuery)
@@ -20,110 +49,130 @@ class PRCHelpers {
     );
   }
 
-  async getPlayersByTeam(team) {
+  async getPlayersByTeam(team: string): Promise<ERLCServerPlayer[]> {
     const players = await this.client.getPlayers();
     const lowerTeam = String(team || '').toLowerCase();
     return players.filter(
-      (p) => String(p.Team || '').toLowerCase() === lowerTeam
+      (p: ERLCServerPlayer) => String(p.Team || '').toLowerCase() === lowerTeam
     );
   }
 
-  async getStaffPlayers() {
+  async getStaffPlayers(): Promise<ERLCServerPlayer[]> {
     const players = await this.client.getPlayers();
-    return players.filter((p) => p.Permission && p.Permission !== 'Normal');
+    return players.filter(
+      (p: ERLCServerPlayer) => p.Permission && p.Permission !== 'Normal'
+    );
   }
 
-  async getOnlineCount() {
+  async getOnlineCount(): Promise<number> {
     const status = await this.client.getServerStatus();
     return status.CurrentPlayers;
   }
 
-  async isServerFull() {
+  async isServerFull(): Promise<boolean> {
     const status = await this.client.getServerStatus();
     return status.CurrentPlayers >= status.MaxPlayers;
   }
 
-  async sendMessage(message) {
+  async sendMessage(message: string): Promise<void> {
     await this.client.executeCommand(`:h ${message}`);
   }
 
-  async sendPM(player, message) {
+  async sendPM(player: string, message: string): Promise<void> {
     await this.client.executeCommand(`:pm ${player} ${message}`);
   }
 
-  async kickPlayer(player, reason) {
+  async kickPlayer(player: string, reason?: string): Promise<void> {
     const cmd = reason ? `:kick ${player} ${reason}` : `:kick ${player}`;
     await this.client.executeCommand(cmd);
   }
 
-  async banPlayer(player, reason) {
+  async banPlayer(player: string, reason?: string): Promise<void> {
     const cmd = reason ? `:ban ${player} ${reason}` : `:ban ${player}`;
     await this.client.executeCommand(cmd);
   }
 
-  async teleportPlayer(player, target) {
+  async teleportPlayer(player: string, target: string): Promise<void> {
     await this.client.executeCommand(`:tp ${player} ${target}`);
   }
 
-  async setTeam(player, team) {
+  async setTeam(player: string, team: string): Promise<void> {
     await this.client.executeCommand(`:team ${player} ${team}`);
   }
 
-  async getRecentJoins(minutes = 10) {
+  async getRecentJoins(minutes: number = 10): Promise<ERLCJoinLog[]> {
     const logs = await this.client.getJoinLogs();
     const cutoff = Date.now() / 1000 - minutes * 60;
-    return logs.filter((log) => log.Join && log.Timestamp > cutoff);
+    return logs.filter(
+      (log: ERLCJoinLog) => log.Join && log.Timestamp > cutoff
+    );
   }
 
-  async getRecentLeaves(minutes = 10) {
+  async getRecentLeaves(minutes: number = 10): Promise<ERLCJoinLog[]> {
     const logs = await this.client.getJoinLogs();
     const cutoff = Date.now() / 1000 - minutes * 60;
-    return logs.filter((log) => !log.Join && log.Timestamp > cutoff);
+    return logs.filter(
+      (log: ERLCJoinLog) => !log.Join && log.Timestamp > cutoff
+    );
   }
 
-  async getPlayerKills(player, hours = 1) {
+  async getPlayerKills(
+    player: string,
+    hours: number = 1
+  ): Promise<ERLCKillLog[]> {
     const logs = await this.client.getKillLogs();
     const cutoff = Date.now() / 1000 - hours * 3600;
     const lowerPlayer = String(player || '').toLowerCase();
     return logs.filter(
-      (log) =>
+      (log: ERLCKillLog) =>
         String(log.Killer || '')
           .toLowerCase()
           .includes(lowerPlayer) && log.Timestamp > cutoff
     );
   }
 
-  async getPlayerDeaths(player, hours = 1) {
+  async getPlayerDeaths(
+    player: string,
+    hours: number = 1
+  ): Promise<ERLCKillLog[]> {
     const logs = await this.client.getKillLogs();
     const cutoff = Date.now() / 1000 - hours * 3600;
     const lowerPlayer = String(player || '').toLowerCase();
     return logs.filter(
-      (log) =>
+      (log: ERLCKillLog) =>
         String(log.Killed || '')
           .toLowerCase()
           .includes(lowerPlayer) && log.Timestamp > cutoff
     );
   }
 
-  async getPlayerCommands(player, hours = 1) {
+  async getPlayerCommands(
+    player: string,
+    hours: number = 1
+  ): Promise<ERLCCommandLog[]> {
     const logs = await this.client.getCommandLogs();
     const cutoff = Date.now() / 1000 - hours * 3600;
     const lowerPlayer = String(player || '').toLowerCase();
     return logs.filter(
-      (log) =>
+      (log: ERLCCommandLog) =>
         String(log.Player || '')
           .toLowerCase()
           .includes(lowerPlayer) && log.Timestamp > cutoff
     );
   }
 
-  async getUnansweredModCalls(hours = 1) {
+  async getUnansweredModCalls(hours: number = 1): Promise<ERLCModCallLog[]> {
     const logs = await this.client.getModCalls();
     const cutoff = Date.now() / 1000 - hours * 3600;
-    return logs.filter((log) => !log.Moderator && log.Timestamp > cutoff);
+    return logs.filter(
+      (log: ERLCModCallLog) => !log.Moderator && log.Timestamp > cutoff
+    );
   }
 
-  async waitForPlayer(nameOrId, timeoutMs = 30000) {
+  async waitForPlayer(
+    nameOrId: string,
+    timeoutMs: number = 30000
+  ): Promise<ERLCServerPlayer> {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
       const player = await this.findPlayer(nameOrId);
@@ -133,7 +182,10 @@ class PRCHelpers {
     throw new Error(`Player ${nameOrId} not found within timeout`);
   }
 
-  async waitForPlayerCount(count, timeoutMs = 60000) {
+  async waitForPlayerCount(
+    count: number,
+    timeoutMs: number = 60000
+  ): Promise<void> {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
       const currentCount = await this.getOnlineCount();
@@ -143,7 +195,7 @@ class PRCHelpers {
     throw new Error(`Server did not reach ${count} players within timeout`);
   }
 
-  formatPlayer(player) {
+  formatPlayer(player: string): PlayerFormat {
     const split = String(player || '').split(':');
     if (split.length !== 2) {
       throw new Error(`Invalid player format: ${player}. Expected "Name:ID"`);
@@ -151,18 +203,18 @@ class PRCHelpers {
     return { Name: split[0], ID: split[1] };
   }
 
-  formatTimestamp(timestamp) {
+  formatTimestamp(timestamp: number): string {
     return new Date(timestamp * 1000).toLocaleString();
   }
 
-  formatUptime(startTimestamp) {
+  formatUptime(startTimestamp: number): string {
     const uptimeMs = Date.now() - startTimestamp * 1000;
     const hours = Math.floor(uptimeMs / (1000 * 60 * 60));
     const minutes = Math.floor((uptimeMs % (1000 * 60 * 60)) / (1000 * 60));
     return `${hours}h ${minutes}m`;
   }
 
-  async kickAllFromTeam(team, reason) {
+  async kickAllFromTeam(team: string, reason?: string): Promise<string[]> {
     const players = await this.getPlayersByTeam(team);
     if (players.length === 0) return [];
 
@@ -174,7 +226,7 @@ class PRCHelpers {
           return null;
         }
       })
-      .filter(Boolean);
+      .filter(Boolean) as string[];
 
     if (userNames.length > 0) {
       const cmd = reason
@@ -186,7 +238,7 @@ class PRCHelpers {
     return players.map((p) => p.Player);
   }
 
-  async messageAllStaff(message) {
+  async messageAllStaff(message: string): Promise<void> {
     const staff = await this.getStaffPlayers();
     if (staff.length === 0) return;
 
@@ -198,14 +250,14 @@ class PRCHelpers {
           return null;
         }
       })
-      .filter(Boolean);
+      .filter(Boolean) as string[];
 
     if (userNames.length > 0) {
       await this.client.executeCommand(`:pm ${userNames.join(',')} ${message}`);
     }
   }
 
-  async getServerStats(hours = 24) {
+  async getServerStats(hours: number = 24): Promise<ServerStats> {
     const cutoff = Date.now() / 1000 - hours * 3600;
 
     const [status, joinLogs, killLogs, commandLogs, modCalls] =
@@ -218,11 +270,17 @@ class PRCHelpers {
       ]);
 
     const recentJoins = joinLogs.filter(
-      (log) => log.Join && log.Timestamp > cutoff
+      (log: ERLCJoinLog) => log.Join && log.Timestamp > cutoff
     );
-    const recentKills = killLogs.filter((log) => log.Timestamp > cutoff);
-    const recentCommands = commandLogs.filter((log) => log.Timestamp > cutoff);
-    const recentModCalls = modCalls.filter((log) => log.Timestamp > cutoff);
+    const recentKills = killLogs.filter(
+      (log: ERLCKillLog) => log.Timestamp > cutoff
+    );
+    const recentCommands = commandLogs.filter(
+      (log: ERLCCommandLog) => log.Timestamp > cutoff
+    );
+    const recentModCalls = modCalls.filter(
+      (log: ERLCModCallLog) => log.Timestamp > cutoff
+    );
 
     return {
       current: {
@@ -236,12 +294,10 @@ class PRCHelpers {
         kills: recentKills.length,
         commands: recentCommands.length,
         modCalls: recentModCalls.length,
-        uniquePlayers: new Set(recentJoins.map((log) => log.Player)).size,
+        uniquePlayers: new Set(
+          recentJoins.map((log: ERLCJoinLog) => log.Player)
+        ).size,
       },
     };
   }
 }
-
-module.exports = {
-  PRCHelpers,
-};

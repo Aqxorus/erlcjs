@@ -1,19 +1,27 @@
-const { ErrorCode, isPrivateServerOfflineError } = require('./types');
+import { ErrorCode, isPrivateServerOfflineError } from './types.js';
+import type { APIError } from './types.js';
 
-class PRCAPIError extends Error {
-  /**
-   * @param {Object} params
-   * @param {number} [params.code]
-   * @param {string} params.message
-   * @param {number} [params.status]
-   * @param {string} [params.statusText]
-   * @param {number} [params.retryAfter] - Retry after in milliseconds
-   * @param {string} [params.method]
-   * @param {string} [params.path]
-   * @param {string} [params.url]
-   * @param {string} [params.responseBody]
-   */
-  constructor(params) {
+export class PRCAPIError extends Error {
+  code?: number;
+  status?: number;
+  statusText?: string;
+  retryAfter?: number;
+  method?: string;
+  path?: string;
+  url?: string;
+  responseBody?: string;
+
+  constructor(params: {
+    code?: number;
+    message: string;
+    status?: number;
+    statusText?: string;
+    retryAfter?: number;
+    method?: string;
+    path?: string;
+    url?: string;
+    responseBody?: string;
+  }) {
     super(params?.message || 'PRC API Error');
     this.name = 'PRCAPIError';
 
@@ -28,13 +36,18 @@ class PRCAPIError extends Error {
     this.responseBody = params?.responseBody;
   }
 
-  static fromResponse(response, body, request = {}, rawText = '') {
+  static fromResponse(
+    response: Response,
+    body: any,
+    request: { method?: string; path?: string; url?: string } = {},
+    rawText: string = ''
+  ): PRCAPIError {
     const code = body?.code ?? body?.errorCode ?? 0;
     const message =
       body?.message ||
       `HTTP ${response?.status || 0}: ${response?.statusText || 'Error'}`;
 
-    let retryAfterMs;
+    let retryAfterMs: number | undefined;
     if (typeof body?.retry_after === 'number' && body.retry_after > 0) {
       retryAfterMs = Math.max(0, Math.round(body.retry_after * 1000));
     }
@@ -52,37 +65,35 @@ class PRCAPIError extends Error {
     });
   }
 
-  get isRateLimit() {
+  get isRateLimit(): boolean {
     return this.code === ErrorCode.RATE_LIMITED || this.status === 429;
   }
 
-  get isServerOffline() {
+  get isServerOffline(): boolean {
     return (
       this.code === ErrorCode.SERVER_OFFLINE ||
       isPrivateServerOfflineError(this)
     );
   }
 
-  get isAuthError() {
-    return [
+  get isAuthError(): boolean {
+    const authErrors = [
       ErrorCode.NO_SERVER_KEY,
       ErrorCode.INVALID_SERVER_KEY_FORMAT,
       ErrorCode.INVALID_SERVER_KEY,
       ErrorCode.INVALID_GLOBAL_KEY,
       ErrorCode.BANNED_SERVER_KEY,
-    ].includes(this.code);
+    ];
+    return authErrors.includes(this.code as any);
   }
 
-  get isRetryable() {
-    return [
+  get isRetryable(): boolean {
+    const retryableErrors = [
       ErrorCode.ROBLOX_ERROR,
       ErrorCode.INTERNAL_ERROR,
       ErrorCode.RATE_LIMITED,
       ErrorCode.SERVER_OFFLINE,
-    ].includes(this.code);
+    ];
+    return retryableErrors.includes(this.code as any);
   }
 }
-
-module.exports = {
-  PRCAPIError,
-};

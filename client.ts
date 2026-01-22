@@ -1,18 +1,58 @@
-const { RateLimiter } = require('./rateLimiter');
-const { RequestQueue } = require('./queue');
-const { MemoryCache, RedisCache } = require('./cache');
-const { Subscription } = require('./subscription');
-const { getFriendlyErrorMessage } = require('./types');
-const { PRCAPIError } = require('./errors');
-const Sentry = require('@sentry/node');
+import * as Sentry from '@sentry/node';
+
+import { MemoryCache, RedisCache } from './cache.js';
+import { PRCAPIError } from './errors.js';
+import { RequestQueue } from './queue.js';
+import { RateLimiter } from './rateLimiter.js';
+import { Subscription } from './subscription.js';
+import {
+  ClientOptions,
+  ERLCCommandLog,
+  ERLCJoinLog,
+  ERLCKillLog,
+  ERLCModCallLog,
+  ERLCServerPlayer,
+  ERLCVehicle,
+  EventConfig,
+  MethodOptions,
+  getFriendlyErrorMessage,
+} from './types.js';
+
+interface CachedValue {
+  found: boolean;
+  value?: any;
+  isStale?: boolean;
+}
+
+interface RequestContext {
+  method?: string;
+  path?: string;
+  url?: string;
+}
+
+interface CacheStore {
+  store: MemoryCache | RedisCache;
+  ttl: number;
+  staleIfError: boolean;
+  prefix: string;
+}
 
 class ERLCClient {
+  private apiKey: string;
+  private baseURL: string;
+  private timeout: number;
+  private keepAlive: boolean;
+  private globalKey?: string;
+  private rateLimiter: RateLimiter;
+  private queue: RequestQueue | null;
+  public cache: CacheStore | null;
+
   /**
    * Create a new ERLC API client
-   * @param {string} apiKey - The API key for authentication
-   * @param {ClientOptions} [options] - Client configuration options
+   * @param apiKey - The API key for authentication
+   * @param options - Client configuration options
    */
-  constructor(apiKey, options = {}) {
+  constructor(apiKey: string, options: ClientOptions = {}) {
     if (!apiKey) {
       throw new Error('API key is required');
     }
@@ -57,129 +97,135 @@ class ERLCClient {
 
   /**
    * Get a list of players currently on the server
-   * @returns {Promise<ERLCServerPlayer[]>} Array of players
+   * @returns Array of players
    */
-  async getPlayers(options) {
+  async getPlayers(options?: MethodOptions): Promise<ERLCServerPlayer[]> {
     return this.get('/server/players', options);
   }
 
   /**
    * Get current server status (erlc.ts parity)
-   * @returns {Promise<Object>}
+   * @returns Server information
    */
-  async getServerStatus(options) {
+  async getServerStatus(options?: MethodOptions): Promise<any> {
     return this.getServer(options);
   }
 
   /**
    * Get command execution history
-   * @returns {Promise<ERLCCommandLog[]>} Array of command logs
+   * @returns Array of command logs
    */
-  async getCommandLogs(options) {
+  async getCommandLogs(options?: MethodOptions): Promise<ERLCCommandLog[]> {
     return this.get('/server/commandlogs', options);
   }
 
   /**
    * Get moderation call history
-   * @returns {Promise<ERLCModCallLog[]>} Array of mod call logs
+   * @returns Array of mod call logs
    */
-  async getModCalls(options) {
+  async getModCalls(options?: MethodOptions): Promise<ERLCModCallLog[]> {
     return this.get('/server/modcalls', options);
   }
 
   /**
    * Get kill log history
-   * @returns {Promise<ERLCKillLog[]>} Array of kill logs
+   * @returns Array of kill logs
    */
-  async getKillLogs(options) {
+  async getKillLogs(options?: MethodOptions): Promise<ERLCKillLog[]> {
     return this.get('/server/killlogs', options);
   }
 
   /**
    * Get server join/leave history
-   * @returns {Promise<ERLCJoinLog[]>} Array of join logs
+   * @returns Array of join logs
    */
-  async getJoinLogs(options) {
+  async getJoinLogs(options?: MethodOptions): Promise<ERLCJoinLog[]> {
     return this.get('/server/joinlogs', options);
   }
 
   /**
    * Get list of vehicles on the server
-   * @returns {Promise<ERLCVehicle[]>} Array of vehicles
+   * @returns Array of vehicles
    */
-  async getVehicles(options) {
+  async getVehicles(options?: MethodOptions): Promise<ERLCVehicle[]> {
     return this.get('/server/vehicles', options);
   }
 
   /**
    * Get server information and player count
-   * @returns {Promise<Object>} Server information
+   * @returns Server information
    */
-  async getServer(options) {
+  async getServer(options?: MethodOptions): Promise<any> {
     return this.get('/server', options);
   }
 
   /**
    * Get server queue information
-   * @returns {Promise<Object>} Queue information
+   * @returns Queue information
    */
-  async getQueue(options) {
+  async getQueue(options?: MethodOptions): Promise<any> {
     return this.get('/server/queue', options);
   }
 
   /**
    * Get server ban information
-   * @returns {Promise<Object>} Ban information
+   * @returns Ban information
    */
-  async getBans(options) {
+  async getBans(options?: MethodOptions): Promise<any> {
     return this.get('/server/bans', options);
   }
 
   /**
    * Get server staff information
-   * @returns {Promise<Object>}
+   * @returns Staff information
    */
-  async getStaff(options) {
+  async getStaff(options?: MethodOptions): Promise<any> {
     return this.get('/server/staff', options);
   }
 
   /**
    * Execute a server command
-   * @param {string} command - The command to execute (with leading slash)
-   * @returns {Promise<void>}
+   * @param command - The command to execute (with leading slash)
    */
-  async executeCommand(command) {
+  async executeCommand(command: string): Promise<void> {
     const data = { command };
     return this.post('/server/command', data);
   }
 
   /**
    * Subscribe to real-time events
-   * @param {string[]} eventTypes - Array of event types to subscribe to
-   * @param {EventConfig} [config] - Event configuration
-   * @returns {Subscription} Event subscription
+   * @param eventTypes - Array of event types to subscribe to
+   * @param config - Event configuration
+   * @returns Event subscription
    */
-  subscribe(eventTypes, config = {}) {
+  subscribe(
+    eventTypes: string[],
+    config: Partial<EventConfig> = {}
+  ): Subscription {
     const subscription = new Subscription(this, config, eventTypes);
     return subscription;
   }
 
   /**
    * Subscribe to real-time events with custom configuration
-   * @param {EventConfig} config - Event configuration
-   * @param {string[]} eventTypes - Array of event types to subscribe to
-   * @returns {Subscription} Event subscription
+   * @param config - Event configuration
+   * @param eventTypes - Array of event types to subscribe to
+   * @returns Event subscription
    */
-  subscribeWithConfig(config, ...eventTypes) {
+  subscribeWithConfig(
+    config: Partial<EventConfig>,
+    ...eventTypes: string[]
+  ): Subscription {
     return this.subscribe(eventTypes, config);
   }
 
   /**
    * Make a GET request to the API
-   * @param {string} path - API endpoint path
-   * @returns {Promise<*>} Response data
+   * @param path - API endpoint path
+   * @param options - Request options
+   * @returns Response data
    */
-  async get(path, options = {}) {
+  async get(path: string, options: MethodOptions = {}): Promise<any> {
     const cacheKey = this.cache ? `${this.cache.prefix}${path}` : null;
     const shouldCache = !!this.cache && options.cache !== false;
     const ttlOverride = Number(options.cacheMaxAge);
@@ -188,13 +234,15 @@ class ERLCClient {
         ? ttlOverride
         : this.cache?.ttl;
 
-    let staleValue = null;
+    let staleValue: any = null;
 
     if (shouldCache && cacheKey) {
-      const store = this.cache.store;
-      const cached =
+      const store = this.cache!.store;
+      const cached: CachedValue =
         store instanceof MemoryCache
-          ? store.getWithMeta(cacheKey, { allowStale: this.cache.staleIfError })
+          ? store.getWithMeta(cacheKey, {
+              allowStale: this.cache!.staleIfError,
+            })
           : await store.get(cacheKey);
 
       if (cached?.found && !cached?.isStale) {
@@ -211,10 +259,10 @@ class ERLCClient {
       if (shouldCache && cacheKey && response.ok) {
         const data = await response.json();
         try {
-          if (this.cache.store instanceof MemoryCache) {
-            this.cache.store.set(cacheKey, data, ttl);
+          if (this.cache!.store instanceof MemoryCache) {
+            this.cache!.store.set(cacheKey, data, ttl);
           } else {
-            await this.cache.store.set(cacheKey, data, ttl);
+            await this.cache!.store.set(cacheKey, data, ttl);
           }
         } catch {}
         return data;
@@ -227,7 +275,7 @@ class ERLCClient {
       });
     };
 
-    const run = this.queue ? () => this.queue.enqueue(execute) : execute;
+    const run = this.queue ? () => this.queue!.enqueue(execute) : execute;
 
     try {
       return await run();
@@ -241,11 +289,11 @@ class ERLCClient {
 
   /**
    * Make a POST request to the API
-   * @param {string} path - API endpoint path
-   * @param {Object} data - Request body data
-   * @returns {Promise<*>} Response data
+   * @param path - API endpoint path
+   * @param data - Request body data
+   * @returns Response data
    */
-  async post(path, data) {
+  async post(path: string, data: any): Promise<any> {
     const execute = async () => {
       const response = await this.makeRequest('POST', path, data);
       return this.handleResponse(response, {
@@ -264,33 +312,37 @@ class ERLCClient {
 
   /**
    * Make an HTTP request to the API
-   * @param {string} method - HTTP method
-   * @param {string} path - API endpoint path
-   * @param {Object} [data] - Request body data
-   * @returns {Promise<Response>} Fetch response
+   * @param method - HTTP method
+   * @param path - API endpoint path
+   * @param data - Request body data
+   * @returns Fetch response
    */
-  async makeRequest(method, path, data = null) {
+  async makeRequest(
+    method: string,
+    path: string,
+    data: any = null
+  ): Promise<Response> {
     return this.makeRequestWithRetry(method, path, data, 3);
   }
 
   /**
    * Make an HTTP request with retry logic for transient network errors
-   * @param {string} method - HTTP method
-   * @param {string} path - API endpoint path
-   * @param {Object} [data] - Request body data
-   * @param {number} maxRetries - Maximum number of retry attempts
-   * @param {number} baseDelay - Base delay in milliseconds for exponential backoff
-   * @returns {Promise<Response>} Fetch response
+   * @param method - HTTP method
+   * @param path - API endpoint path
+   * @param data - Request body data
+   * @param maxRetries - Maximum number of retry attempts
+   * @param baseDelay - Base delay in milliseconds for exponential backoff
+   * @returns Fetch response
    */
   async makeRequestWithRetry(
-    method,
-    path,
-    data = null,
+    method: string,
+    path: string,
+    data: any = null,
     maxRetries = 3,
     baseDelay = 1000
-  ) {
+  ): Promise<Response> {
     const url = `${this.baseURL}${path}`;
-    let lastError;
+    let lastError: Error | undefined;
     const perAttemptTimeout = Math.max(2000, Number(this.timeout) || 0);
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -303,7 +355,7 @@ class ERLCClient {
           }
         }
 
-        const options = {
+        const options: RequestInit = {
           method,
           headers: {
             'Server-Key': this.apiKey,
@@ -337,8 +389,8 @@ class ERLCClient {
               return res;
             } catch (err) {
               span.setAttribute('error', true);
-              span.setAttribute('error.name', err?.name || 'Error');
-              span.setAttribute('error.message', err?.message || '');
+              span.setAttribute('error.name', (err as any)?.name || 'Error');
+              span.setAttribute('error.message', (err as any)?.message || '');
               throw err;
             }
           }
@@ -432,11 +484,11 @@ class ERLCClient {
 
         if (this.rateLimiter && response.headers) {
           const limit =
-            parseInt(response.headers.get('X-RateLimit-Limit')) || 0;
+            parseInt(response.headers.get('X-RateLimit-Limit') || '0') || 0;
           const remaining =
-            parseInt(response.headers.get('X-RateLimit-Remaining')) || 0;
+            parseInt(response.headers.get('X-RateLimit-Remaining') || '0') || 0;
           const reset =
-            parseInt(response.headers.get('X-RateLimit-Reset')) || 0;
+            parseInt(response.headers.get('X-RateLimit-Reset') || '0') || 0;
 
           if (limit > 0) {
             this.rateLimiter.updateFromHeaders(
@@ -450,7 +502,7 @@ class ERLCClient {
 
         return response;
       } catch (err) {
-        lastError = err;
+        lastError = err as Error;
 
         if (attempt < maxRetries && this.isRetryableError(err)) {
           const delay = this.calculateBackoffDelay(attempt, baseDelay);
@@ -458,7 +510,9 @@ class ERLCClient {
           console.warn(
             `[ERLC Client] Request failed (attempt ${attempt + 1}/${
               maxRetries + 1
-            }): ${err.message}. Retrying in ${Math.round(delay)}ms...`
+            }): ${(err as Error).message}. Retrying in ${Math.round(
+              delay
+            )}ms...`
           );
           await this.sleep(delay);
           continue;
@@ -473,9 +527,9 @@ class ERLCClient {
               url,
               attempt,
               maxRetries,
-              message: err?.message,
-              name: err?.name,
-              code: err?.code,
+              message: (err as any)?.message,
+              name: (err as any)?.name,
+              code: (err as any)?.code,
             },
           });
         } catch {}
@@ -484,15 +538,15 @@ class ERLCClient {
       }
     }
 
-    throw lastError;
+    throw lastError!;
   }
 
   /**
    * Check if an error is retryable
-   * @param {Error} error - The error to check
-   * @returns {boolean} Whether the error is retryable
+   * @param error - The error to check
+   * @returns Whether the error is retryable
    */
-  isRetryableError(error) {
+  isRetryableError(error: any): boolean {
     if (
       error.code === 'ECONNRESET' ||
       error.code === 'ECONNREFUSED' ||
@@ -534,11 +588,11 @@ class ERLCClient {
 
   /**
    * Calculate exponential backoff delay with jitter
-   * @param {number} attempt - Current attempt number (0-based)
-   * @param {number} baseDelay - Base delay in milliseconds
-   * @returns {number} Delay in milliseconds
+   * @param attempt - Current attempt number (0-based)
+   * @param baseDelay - Base delay in milliseconds
+   * @returns Delay in milliseconds
    */
-  calculateBackoffDelay(attempt, baseDelay) {
+  calculateBackoffDelay(attempt: number, baseDelay: number): number {
     const exponentialDelay = baseDelay * Math.pow(2, attempt);
     const jitter = exponentialDelay * 0.25 * (Math.random() - 0.5);
     return Math.max(500, exponentialDelay + jitter);
@@ -546,12 +600,15 @@ class ERLCClient {
 
   /**
    * Handle API response and errors
-   * @param {Response} response - Fetch response
-   * @param {{method?: string, path?: string, url?: string}} [request] - Request context
-   * @returns {Promise<*>} Parsed response data
+   * @param response - Fetch response
+   * @param request - Request context
+   * @returns Parsed response data
    */
-  async handleResponse(response, request = {}) {
-    const tryParseJson = (text) => {
+  async handleResponse(
+    response: Response,
+    request: RequestContext = {}
+  ): Promise<any> {
+    const tryParseJson = (text: string | null): any => {
       if (!text || typeof text !== 'string') return null;
       const trimmed = text.trim();
       if (!trimmed) return null;
@@ -601,7 +658,7 @@ class ERLCClient {
         );
       }
 
-      let rawText;
+      let rawText: string;
       try {
         rawText = await response.text();
       } catch {
@@ -627,7 +684,7 @@ class ERLCClient {
     }
 
     if (!response.ok) {
-      let rawText;
+      let rawText: string;
       try {
         rawText = await response.text();
       } catch {
@@ -651,7 +708,7 @@ class ERLCClient {
     try {
       return await response.json();
     } catch (_err) {
-      const error = new Error('Failed to parse response JSON');
+      const error: any = new Error('Failed to parse response JSON');
       error.status = response.status;
       error.statusText = response.statusText;
       error.method = request?.method;
@@ -663,17 +720,16 @@ class ERLCClient {
 
   /**
    * Sleep for specified milliseconds
-   * @param {number} ms - Milliseconds to sleep
-   * @returns {Promise}
+   * @param ms - Milliseconds to sleep
    */
-  sleep(ms) {
+  sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
    * Destroy the client and cleanup resources
    */
-  destroy() {
+  destroy(): void {
     if (this.queue) {
       this.queue.stopQueue();
       this.queue.clear();
@@ -683,8 +739,8 @@ class ERLCClient {
       try {
         if (this.cache.store instanceof MemoryCache) {
           this.cache.store.destroy();
-        } else if (this.cache.store.disconnect) {
-          this.cache.store.disconnect().catch(() => undefined);
+        } else if ((this.cache.store as any).disconnect) {
+          (this.cache.store as any).disconnect().catch(() => undefined);
         }
       } catch (_err) {}
     }
@@ -696,9 +752,9 @@ class ERLCClient {
 
   /**
    * Get client status and statistics
-   * @returns {Object} Client status information
+   * @returns Client status information
    */
-  getStatus() {
+  getStatus(): any {
     const status = {
       rateLimiter: this.rateLimiter
         ? {
@@ -718,28 +774,28 @@ class ERLCClient {
   /**
    * Clear the client cache (erlc.ts parity)
    */
-  async clearCache() {
+  async clearCache(): Promise<void> {
     if (!this.cache) return;
     try {
       if (this.cache.store instanceof MemoryCache) {
         this.cache.store.clear();
       } else {
-        await this.cache.store.clear();
+        await (this.cache.store as any).clear();
       }
     } catch {}
   }
 
   /**
    * Get cache size (erlc.ts parity)
-   * @returns {Promise<number>}
+   * @returns Cache size
    */
-  async getCacheSize() {
+  async getCacheSize(): Promise<number> {
     if (!this.cache) return 0;
     try {
       if (this.cache.store instanceof MemoryCache) {
         return this.cache.store.size();
       }
-      return await this.cache.store.size();
+      return await (this.cache.store as any).size();
     } catch {
       return 0;
     }
@@ -747,9 +803,9 @@ class ERLCClient {
 
   /**
    * Get a cache entry directly (in-memory only)
-   * @param {string} key
+   * @param key - Cache key
    */
-  getCacheEntry(key) {
+  getCacheEntry(key: string): any {
     if (!this.cache) return null;
     if (!(this.cache.store instanceof MemoryCache)) return null;
     const entry = this.cache.store.getRawEntry(key);
@@ -758,9 +814,9 @@ class ERLCClient {
 
   /**
    * Get cache keys (in-memory only)
-   * @returns {string[]}
+   * @returns Array of cache keys
    */
-  getCacheKeys() {
+  getCacheKeys(): string[] {
     if (!this.cache) return [];
     if (!(this.cache.store instanceof MemoryCache)) return [];
     return this.cache.store.getAllKeys();
@@ -769,16 +825,12 @@ class ERLCClient {
 
 /**
  * Create a new ERLC client with options
- * @param {string} apiKey - The API key
- * @param {ClientOptions} [options] - Client options
- * @returns {ERLCClient} New client instance
+ * @param apiKey - The API key
+ * @param options - Client options
+ * @returns New client instance
  */
-function createClient(apiKey, options = {}) {
+function createClient(apiKey: string, options: ClientOptions = {}): ERLCClient {
   return new ERLCClient(apiKey, options);
 }
 
-module.exports = {
-  ERLCClient,
-  createClient,
-  getFriendlyErrorMessage,
-};
+export { ERLCClient, createClient, getFriendlyErrorMessage };

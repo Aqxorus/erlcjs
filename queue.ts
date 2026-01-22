@@ -1,9 +1,21 @@
-class RequestQueue {
-  /**
-   * @param {number} workers - Number of workers to process requests
-   * @param {number} interval - Interval between requests in milliseconds
-   */
-  constructor(workers = 1, interval = 1000) {
+interface QueuedRequest {
+  execute: () => Promise<any>;
+  resolve: (value: any) => void;
+  reject: (reason: any) => void;
+  cancelled: boolean;
+  timestamp: number;
+}
+
+export class RequestQueue {
+  private workers: number;
+  private interval: number;
+  private queue: (QueuedRequest | undefined)[];
+  private queueOffset: number;
+  private running: boolean;
+  private activeWorkers: number;
+  private stop: boolean;
+
+  constructor(workers: number = 1, interval: number = 1000) {
     this.workers = Math.max(1, workers);
     this.interval = Math.max(0, interval);
     this.queue = [];
@@ -13,10 +25,7 @@ class RequestQueue {
     this.stop = false;
   }
 
-  /**
-   * Start processing queued requests
-   */
-  start() {
+  start(): void {
     if (this.running) return;
 
     this.running = true;
@@ -27,18 +36,12 @@ class RequestQueue {
     }
   }
 
-  /**
-   * Stop processing requests
-   */
-  stopQueue() {
+  stopQueue(): void {
     this.running = false;
     this.stop = true;
   }
 
-  /**
-   * Worker function to process requests
-   */
-  async worker() {
+  private async worker(): Promise<void> {
     this.activeWorkers++;
 
     while (!this.stop && this.running) {
@@ -70,14 +73,9 @@ class RequestQueue {
     this.activeWorkers--;
   }
 
-  /**
-   * Add a request to the queue
-   * @param {Function} execute - Function that executes the request
-   * @returns {Promise} Promise that resolves with the request result
-   */
-  enqueue(execute) {
+  enqueue(execute: () => Promise<any>): Promise<any> {
     return new Promise((resolve, reject) => {
-      const request = {
+      const request: QueuedRequest = {
         execute,
         resolve,
         reject,
@@ -93,11 +91,11 @@ class RequestQueue {
     });
   }
 
-  /**
-   * Get current queue status
-   * @returns {{queueLength: number, activeWorkers: number, running: boolean}}
-   */
-  getStatus() {
+  getStatus(): {
+    queueLength: number;
+    activeWorkers: number;
+    running: boolean;
+  } {
     return {
       queueLength: this.getQueueLength(),
       activeWorkers: this.activeWorkers,
@@ -105,24 +103,19 @@ class RequestQueue {
     };
   }
 
-  /**
-   * Clear all pending requests
-   */
-  clear() {
+  clear(): void {
     const pendingRequests = this.queue.slice(this.queueOffset);
     this.queue = [];
     this.queueOffset = 0;
     pendingRequests.forEach((request) => {
-      request.cancelled = true;
-      request.reject(new Error('Queue was cleared'));
+      if (request) {
+        request.cancelled = true;
+        request.reject(new Error('Queue was cleared'));
+      }
     });
   }
 
-  /**
-   * Remove next request without incurring O(n) array shifts
-   * @returns {Object|null}
-   */
-  dequeue() {
+  private dequeue(): QueuedRequest | null {
     if (this.getQueueLength() === 0) {
       return null;
     }
@@ -134,7 +127,7 @@ class RequestQueue {
     if (this.queueOffset >= this.queue.length) {
       this.queue = [];
       this.queueOffset = 0;
-      return request;
+      return request || null;
     }
 
     if (this.queueOffset > 1024 && this.queueOffset * 2 >= this.queue.length) {
@@ -142,25 +135,14 @@ class RequestQueue {
       this.queueOffset = 0;
     }
 
-    return request;
+    return request || null;
   }
 
-  /**
-   * Current number of queued requests
-   * @returns {number}
-   */
-  getQueueLength() {
+  getQueueLength(): number {
     return this.queue.length - this.queueOffset;
   }
 
-  /**
-   * Sleep for specified milliseconds
-   * @param {number} ms - Milliseconds to sleep
-   * @returns {Promise}
-   */
-  sleep(ms) {
+  private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
-
-module.exports = { RequestQueue };

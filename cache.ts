@@ -1,8 +1,31 @@
+interface CacheItem {
+  value: any;
+  expiration: Date | null;
+  createdAt: Date;
+}
+
+interface CacheStats {
+  hits: number;
+  misses: number;
+  sets: number;
+  deletes: number;
+  evictions: number;
+}
+
+interface CacheGetResult {
+  value: any;
+  found: boolean;
+  isStale?: boolean;
+}
+
 class MemoryCache {
-  /**
-   * @param {number} maxItems - Maximum number of items to cache
-   */
-  constructor(maxItems = 1000) {
+  private items: Map<string, CacheItem>;
+  private maxItems: number;
+  private stats: CacheStats;
+  private onEvict: ((key: string, value: any) => void) | null;
+  private cleanupInterval: NodeJS.Timeout;
+
+  constructor(maxItems: number = 1000) {
     this.items = new Map();
     this.maxItems = maxItems;
     this.stats = {
@@ -17,12 +40,7 @@ class MemoryCache {
     this.cleanupInterval = setInterval(() => this.cleanup(), 60000);
   }
 
-  /**
-   * Get a value from the cache
-   * @param {string} key - Cache key
-   * @returns {{value: *, found: boolean}} Cached value and whether it was found
-   */
-  get(key) {
+  get(key: string): CacheGetResult {
     const item = this.items.get(key);
 
     if (!item) {
@@ -40,13 +58,10 @@ class MemoryCache {
     return { value: item.value, found: true };
   }
 
-  /**
-   * Get cache entry including stale value (expired) when requested.
-   * @param {string} key
-   * @param {{allowStale?: boolean}} [options]
-   * @returns {{value: *, found: boolean, isStale: boolean}}
-   */
-  getWithMeta(key, options = {}) {
+  getWithMeta(
+    key: string,
+    options: { allowStale?: boolean } = {}
+  ): CacheGetResult {
     const item = this.items.get(key);
     if (!item) {
       this.stats.misses++;
@@ -69,14 +84,8 @@ class MemoryCache {
     return { value: item.value, found: true, isStale: true };
   }
 
-  /**
-   * Set a value in the cache
-   * @param {string} key - Cache key
-   * @param {*} value - Value to cache
-   * @param {number} ttl - Time to live in milliseconds
-   */
-  set(key, value, ttl) {
-    let expiration = null;
+  set(key: string, value: any, ttl: number): void {
+    let expiration: Date | null = null;
     if (ttl > 0) {
       expiration = new Date(Date.now() + ttl);
     }
@@ -94,31 +103,20 @@ class MemoryCache {
     this.stats.sets++;
   }
 
-  /**
-   * Delete a value from the cache
-   * @param {string} key - Cache key
-   */
-  delete(key) {
+  delete(key: string): void {
     const deleted = this.items.delete(key);
     if (deleted) {
       this.stats.deletes++;
     }
   }
 
-  /**
-   * Clear all items from the cache
-   */
-  clear() {
+  clear(): void {
     const count = this.items.size;
     this.items.clear();
     this.stats.deletes += count;
   }
 
-  /**
-   * Get cache statistics
-   * @returns {Object} Cache statistics
-   */
-  getStats() {
+  getStats(): CacheStats & { size: number; hitRate: number } {
     return {
       ...this.stats,
       size: this.items.size,
@@ -126,43 +124,23 @@ class MemoryCache {
     };
   }
 
-  /**
-   * Cache size helper (erlc.ts parity).
-   * @returns {number}
-   */
-  size() {
+  size(): number {
     return this.items.size;
   }
 
-  /**
-   * Get raw entry for debugging.
-   * @param {string} key
-   * @returns {{value: *, expiration: (Date|null), createdAt: Date}|null}
-   */
-  getRawEntry(key) {
+  getRawEntry(key: string): CacheItem | null {
     return this.items.get(key) || null;
   }
 
-  /**
-   * Get all keys (debugging).
-   * @returns {string[]}
-   */
-  getAllKeys() {
+  getAllKeys(): string[] {
     return Array.from(this.items.keys());
   }
 
-  /**
-   * Set eviction callback
-   * @param {Function} fn - Callback function called when items are evicted
-   */
-  setEvictionCallback(fn) {
+  setEvictionCallback(fn: (key: string, value: any) => void): void {
     this.onEvict = fn;
   }
 
-  /**
-   * Evict the oldest item from cache
-   */
-  evictOldest() {
+  evictOldest(): void {
     if (this.items.size === 0) return;
 
     const firstKey = this.items.keys().next().value;
@@ -171,17 +149,14 @@ class MemoryCache {
     this.items.delete(firstKey);
     this.stats.evictions++;
 
-    if (this.onEvict) {
+    if (this.onEvict && item) {
       this.onEvict(firstKey, item.value);
     }
   }
 
-  /**
-   * Clean up expired items
-   */
-  cleanup() {
+  cleanup(): void {
     const now = Date.now();
-    const toDelete = [];
+    const toDelete: string[] = [];
 
     for (const [key, item] of this.items) {
       if (item.expiration && now > item.expiration.getTime()) {
@@ -195,23 +170,48 @@ class MemoryCache {
     }
   }
 
-  /**
-   * Destroy the cache and cleanup resources
-   */
-  destroy() {
+  destroy(): void {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
-      this.cleanupInterval = null;
     }
     this.clear();
   }
 }
 
+type ConnectionState =
+  | 'idle'
+  | 'disabled'
+  | 'connecting'
+  | 'connected'
+  | 'disconnected'
+  | 'error';
+
+interface RedisClient {
+  isOpen: boolean;
+  isReady: boolean;
+  get(key: string): Promise<string | null>;
+  setEx(key: string, seconds: number, value: string): Promise<any>;
+  del(key: string | string[]): Promise<number>;
+  flushDb(): Promise<string>;
+  keys(pattern: string): Promise<string[]>;
+  scanIterator(options: {
+    MATCH: string;
+    COUNT: number;
+  }): AsyncIterable<string>;
+  connect(): Promise<void>;
+  disconnect(): Promise<void>;
+  on(event: string, listener: (...args: any[]) => void): void;
+}
+
 class RedisCache {
-  /**
-   * @param {{url: string, keyPrefix?: string}} options
-   */
-  constructor(options) {
+  private url?: string;
+  private keyPrefix?: string;
+  private _clientPromise: Promise<RedisClient> | null;
+  private _client: RedisClient | null;
+  private connectionState: ConnectionState;
+  private lastError: Error | null;
+
+  constructor(options?: { url?: string; keyPrefix?: string }) {
     this.url = options?.url;
     this.keyPrefix = options?.keyPrefix;
     this._clientPromise = null;
@@ -220,20 +220,20 @@ class RedisCache {
     this.lastError = null;
   }
 
-  _fullKey(rawKey) {
+  private _fullKey(rawKey: string): string {
     return this.keyPrefix ? `${this.keyPrefix}${rawKey}` : rawKey;
   }
 
-  async _getClient() {
+  private async _getClient(): Promise<RedisClient> {
     if (this._clientPromise) return this._clientPromise;
 
     this._clientPromise = (async () => {
-      let redis;
+      let redis: any;
       try {
         redis = await import('redis');
       } catch (err) {
         this.connectionState = 'error';
-        this.lastError = err;
+        this.lastError = err as Error;
         throw new Error(
           "Redis cache configured but 'redis' dependency is not installed. Install it with `pnpm add redis`."
         );
@@ -241,7 +241,7 @@ class RedisCache {
 
       this.connectionState = 'connecting';
       this.lastError = null;
-      const client = redis.createClient({ url: this.url });
+      const client = redis.createClient({ url: this.url }) as RedisClient;
       this._client = client;
 
       client.on('ready', () => {
@@ -255,7 +255,7 @@ class RedisCache {
       client.on('reconnecting', () => {
         this.connectionState = 'connecting';
       });
-      client.on('error', (e) => {
+      client.on('error', (e: Error) => {
         this.lastError = e;
         this.connectionState = 'error';
       });
@@ -268,7 +268,13 @@ class RedisCache {
     return this._clientPromise;
   }
 
-  getConnectionStatus() {
+  getConnectionStatus(): {
+    enabled: boolean;
+    state: ConnectionState;
+    isOpen: boolean | null;
+    isReady: boolean | null;
+    error: string | null;
+  } {
     return {
       enabled: Boolean(this.url),
       state: this.connectionState,
@@ -280,7 +286,7 @@ class RedisCache {
     };
   }
 
-  async get(rawKey) {
+  async get(rawKey: string): Promise<CacheGetResult> {
     const client = await this._getClient();
     const key = this._fullKey(rawKey);
     const data = await client.get(key);
@@ -292,20 +298,20 @@ class RedisCache {
     }
   }
 
-  async set(rawKey, value, ttlMs) {
+  async set(rawKey: string, value: any, ttlMs: number): Promise<void> {
     const client = await this._getClient();
     const key = this._fullKey(rawKey);
     const ttlSeconds = Math.max(1, Math.ceil((Number(ttlMs) || 0) / 1000));
     await client.setEx(key, ttlSeconds, JSON.stringify(value));
   }
 
-  async delete(rawKey) {
+  async delete(rawKey: string): Promise<void> {
     const client = await this._getClient();
     const key = this._fullKey(rawKey);
     await client.del(key);
   }
 
-  async clear() {
+  async clear(): Promise<void> {
     const client = await this._getClient();
 
     if (!this.keyPrefix) {
@@ -314,7 +320,7 @@ class RedisCache {
     }
 
     const pattern = `${this.keyPrefix}*`;
-    const keys = [];
+    const keys: string[] = [];
     for await (const key of client.scanIterator({
       MATCH: pattern,
       COUNT: 200,
@@ -326,7 +332,7 @@ class RedisCache {
     }
   }
 
-  async size() {
+  async size(): Promise<number> {
     const client = await this._getClient();
     if (!this.keyPrefix) {
       const keys = await client.keys('*');
@@ -341,15 +347,15 @@ class RedisCache {
     return count;
   }
 
-  getRawEntry() {
+  getRawEntry(): never {
     throw new Error('Cannot get raw entry from Redis cache');
   }
 
-  getAllKeys() {
+  getAllKeys(): never {
     throw new Error('Cannot get all keys from Redis cache');
   }
 
-  async disconnect() {
+  async disconnect(): Promise<void> {
     if (!this._clientPromise) return;
     const client = await this._clientPromise;
     await client.disconnect();
@@ -357,4 +363,4 @@ class RedisCache {
   }
 }
 
-module.exports = { MemoryCache, RedisCache };
+export { MemoryCache, RedisCache };
